@@ -85,7 +85,7 @@ REACTIONS = ["👀", "😱", "🔥", "😍", "🎉", "🥰", "😇", "⚡"]
 
 
 #Other Funtions
-FILE_AUTO_DEL_TIMER = int(environ.get('FILE_AUTO_DEL_TIMER', '600'))
+FILE_AUTO_DEL_TIMER = int(environ.get('FILE_AUTO_DEL_TIMER', '120'))
 AUTO_FILTER = is_enabled('AUTO_FILTER', True)
 IS_PM_SEARCH = is_enabled('IS_PM_SEARCH', True)
 IS_SEND_MOVIE_UPDATE = is_enabled('IS_SEND_MOVIE_UPDATE', False) # Don't Change It ( If You Want To Turn It On Then Turn It On By Commands) We Suggest You To Make It Turn Off If You Are Indexing Files First Time.
