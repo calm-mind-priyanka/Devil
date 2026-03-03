@@ -54,20 +54,20 @@ SUPPORT_CHAT = environ.get('SUPPORT_CHAT', 'https://t.me/+4pPWKtxin2YyNTc1')
 MOVIE_GROUP_LINK = environ.get('MOVIE_GROUP_LINK', 'https://t.me/+bwi-Oeeg11g2ZmI1')
 
 # Verification
-IS_VERIFY = is_enabled('IS_VERIFY', False)
+IS_VERIFY = is_enabled('IS_VERIFY', True)
 #---------------------------------------------------------------
 TUTORIAL = environ.get("TUTORIAL", "https://t.me/+URI0ggQ1mLAyM2Y1")
-TUTORIAL_2 = environ.get("TUTORIAL_2", "https://t.me/+URI0ggQ1mLAyM2Y1")
-TUTORIAL_3 = environ.get("TUTORIAL_3", "https://t.me/+URI0ggQ1mLAyM2Y1")
+#TUTORIAL_2 = environ.get("TUTORIAL_2", "https://t.me/+URI0ggQ1mLAyM2Y1")
+#TUTORIAL_3 = environ.get("TUTORIAL_3", "https://t.me/+URI0ggQ1mLAyM2Y1")
 VERIFY_IMG = environ.get("VERIFY_IMG", "https://graph.org/file/1669ab9af68eaa62c3ca4.jpg")
-SHORTENER_API = environ.get("SHORTENER_API", "5b22551890e0d5f2fded51fd64218868131bef1a")
-SHORTENER_WEBSITE = environ.get("SHORTENER_WEBSITE", 'shortner.in')
-SHORTENER_API2 = environ.get("SHORTENER_API2", "df6b7a6ced3c648afba04c65bf28ec9a77008c56")
-SHORTENER_WEBSITE2 = environ.get("SHORTENER_WEBSITE2", 'linkcents.com')
-SHORTENER_API3 = environ.get("SHORTENER_API3", "5b22551890e0d5f2fded51fd64218868131bef1a")
-SHORTENER_WEBSITE3 = environ.get("SHORTENER_WEBSITE3", 'shortner.in')
-TWO_VERIFY_GAP = int(environ.get('TWO_VERIFY_GAP', "300"))
-THREE_VERIFY_GAP = int(environ.get('THREE_VERIFY_GAP', "14400"))
+SHORTENER_API = environ.get("SHORTENER_API", "7668446fc2e9a5f76f79b7741ae5ea231c8611d0")
+SHORTENER_WEBSITE = environ.get("SHORTENER_WEBSITE", 'Mdiskshort.in')
+#SHORTENER_API2 = environ.get("SHORTENER_API2", "df6b7a6ced3c648afba04c65bf28ec9a77008c56")
+#SHORTENER_WEBSITE2 = environ.get("SHORTENER_WEBSITE2", 'linkcents.com')
+#SHORTENER_API3 = environ.get("SHORTENER_API3", "5b22551890e0d5f2fded51fd64218868131bef1a")
+#SHORTENER_WEBSITE3 = environ.get("SHORTENER_WEBSITE3", 'shortner.in')
+#TWO_VERIFY_GAP = int(environ.get('TWO_VERIFY_GAP', "300"))
+#THREE_VERIFY_GAP = int(environ.get('THREE_VERIFY_GAP', "14400"))
 
 # Language & Quality & Season & Year
 LANGUAGES = ["hindi", "english", "telugu", "tamil", "kannada", "malayalam", "bengali", "marathi", "gujarati", "punjabi", "marathi"]
