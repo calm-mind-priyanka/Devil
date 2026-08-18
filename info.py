@@ -164,7 +164,7 @@ LINK_MODE = is_enabled("LINK_MODE", True)
 TMDB_API_KEY = environ.get("TMDB_API_KEY", "")
 
 # Online Streaming And Download
-STREAM_MODE = bool(environ.get("STREAM_MODE", True))  # Set True or Flase
+STREAM_MODE = is_enabled("STREAM_MODE", True)
 
 MULTI_CLIENT = False
 SLEEP_THRESHOLD = int(environ.get("SLEEP_THRESHOLD", "60"))
