@@ -47,6 +47,9 @@ class Database:
         "shortner_three": SHORTENER_WEBSITE3,
         "api_three": SHORTENER_API3,
         "third_verify_time": THREE_VERIFY_GAP,
+        "files_mode": False,
+        "movie_req": True,
+        "max_results": MAX_BTN,
     }
 
     def new_user(self, id, name):
@@ -138,6 +141,23 @@ class Database:
 
     async def get_all_chats(self):
         return self.grp.find({})
+
+    async def get_user_groups(self, user_id, bot):
+        """Return groups saved by the bot where the user is currently an admin/owner."""
+        groups = []
+        async for chat in self.grp.find({"id": {"$exists": True}}):
+            group_id = chat.get("id")
+            if not group_id:
+                continue
+            try:
+                member = await bot.get_chat_member(int(group_id), int(user_id))
+                status = getattr(member.status, "value", member.status)
+                if status in ("administrator", "owner"):
+                    groups.append(chat)
+            except Exception:
+                # The bot may have left the group or may no longer be able to inspect it.
+                continue
+        return groups
 
     async def get_db_size(self):
         return (await mydb.command("dbstats"))["dataSize"]
