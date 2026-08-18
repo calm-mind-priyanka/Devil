@@ -290,9 +290,6 @@ async def start(client: Client, message):
             await db.update_value(message.from_user.id, "seen_ads", False)
         return
 
-    if len(message.command) == 2 and message.command[1].lower() == "settings":
-        return await settings(client, message)
-
     data = message.command[1]
     try:
         pre, grp_id, file_id = data.split("_", 2)
@@ -331,27 +328,34 @@ async def start(client: Client, message):
             )
             return
     else:
-        channels = settings.get("fsub_channels") or [settings.get("fsub_id", AUTH_CHANNEL)]
-        if not isinstance(channels, list):
-            channels = [channels]
-        channels = [int(x) for x in channels if str(x).lstrip("-").isdigit()]
+        id = settings.get("fsub_id", AUTH_CHANNEL)
+        channel = int(id)
         btn = []
-        missing_custom = False
-        for channel in channels:
-            if channel == AUTH_CHANNEL:
-                continue
-            if not await is_subscribed(client, message.from_user.id, channel):
-                missing_custom = True
-                try:
-                    invite_link_custom = await client.create_chat_invite_link(channel)
-                    btn.append([InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link_custom.invite_link)])
-                except ChatAdminRequired:
-                    logger.error("Make sure Bot is admin in Forcesub channel")
+        if channel != AUTH_CHANNEL and not await is_subscribed(
+            client, message.from_user.id, channel
+        ):
+            invite_link_custom = await client.create_chat_invite_link(channel)
+            btn.append(
+                [
+                    InlineKeyboardButton(
+                        "⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link_custom.invite_link
+                    )
+                ]
+            )
         if not await is_req_subscribed(client, message):
-            invite_link_default = await client.create_chat_invite_link(int(AUTH_CHANNEL), creates_join_request=True)
-            btn.append([InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link_default.invite_link)])
+            invite_link_default = await client.create_chat_invite_link(
+                int(AUTH_CHANNEL), creates_join_request=True
+            )
+            btn.append(
+                [
+                    InlineKeyboardButton(
+                        "⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link_default.invite_link
+                    )
+                ]
+            )
         if message.command[1] != "subscribe" and (
-            await is_req_subscribed(client, message) is False or missing_custom
+            await is_req_subscribed(client, message) is False
+            or await is_subscribed(client, message.from_user.id, channel) is False
         ):
             btn.append(
                 [
@@ -384,13 +388,12 @@ async def start(client: Client, message):
         is_third_shortener = await db.use_third_shortener(
             user_id, settings.get("third_verify_time", THREE_VERIFY_GAP)
         )
-        # File delivery mode: True = verification, False = URL shortlink.
-        file_mode_verify = bool(settings.get("is_verify", IS_VERIFY))
-        verification_required = (
-            file_mode_verify and not user_verified
-        ) or is_second_shortener or is_third_shortener
-
-        if verification_required:
+        if (
+            settings.get("is_verify", IS_VERIFY)
+            and not user_verified
+            or is_second_shortener
+            or is_third_shortener
+        ):
             verify_id = "".join(
                 random.choices(string.ascii_uppercase + string.digits, k=7)
             )
@@ -450,40 +453,6 @@ async def start(client: Client, message):
             await m.delete()
             return
 
-        # Shortlink mode: no verification flow, but the user must pass through
-        # the configured URL shortener before the direct file link is revealed.
-        if not file_mode_verify:
-            temp.CHAT[user_id] = grp_id
-            target = (
-                f"https://telegram.me/{temp.U_NAME}?start=allfiles_{grp_id}_{file_id}"
-                if message.command[1].startswith("allfiles")
-                else f"https://telegram.me/{temp.U_NAME}?start=file_{grp_id}_{file_id}"
-            )
-            shortlink = await get_shortlink(target, grp_id, False, False)
-            howtodownload = settings.get("tutorial", TUTORIAL)
-            buttons = [
-                [
-                    InlineKeyboardButton(text="📥 ᴄʟɪᴄᴋ ᴛᴏ ɢᴇᴛ ғɪʟᴇ 📥", url=shortlink),
-                    InlineKeyboardButton(text="ʜᴏᴡ ᴛᴏ ᴅᴏᴡɴʟᴏᴀᴅ❓", url=howtodownload),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="😁 ʙᴜʏ sᴜʙsᴄʀɪᴘᴛɪᴏɴ - ɴᴏ ɴᴇᴇᴅ ᴛᴏ ᴠᴇʀɪғʏ 😁",
-                        callback_data="getpremium",
-                    ),
-                ],
-            ]
-            d = await m.reply_text(
-                text=script.SHORTLINK_TEXT.format(message.from_user.mention, get_status()),
-                protect_content=True,
-                reply_markup=InlineKeyboardMarkup(buttons),
-                parse_mode=enums.ParseMode.HTML,
-            )
-            await asyncio.sleep(300)
-            await d.delete()
-            await m.delete()
-            return
-
     if data and data.startswith("allfiles"):
         _, grp_id, key = data.split("_", 2)
         files = temp.FILES_ID.get(key)
@@ -495,7 +464,6 @@ async def start(client: Client, message):
             user_id = message.from_user.id
             grp_id = temp.CHAT.get(user_id)
             settings = await get_settings(grp_id)
-            delete_time = int(settings.get("delete_time", DELETE_TIME))
             CAPTION = settings["caption"]
             f_caption = CAPTION.format(
                 file_name=formate_file_name(file.file_name),
@@ -514,36 +482,35 @@ async def start(client: Client, message):
                 file_id=file.file_id,
                 caption=f_caption,
                 reply_markup=InlineKeyboardMarkup(btn),
-                protect_content=bool(settings.get("file_secure", PROTECT_CONTENT)),
             )
             files_to_delete.append(toDel)
 
         delCap = "<i>ᴀʟʟ {} ꜰɪʟᴇꜱ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀꜰᴛᴇʀ {} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</i>".format(
             len(files_to_delete),
             (
-                f"{delete_time / 60} ᴍɪɴᴜᴛᴇs"
-                if delete_time >= 60
-                else f"{delete_time} sᴇᴄᴏɴᴅs"
+                f"{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs"
+                if FILE_AUTO_DEL_TIMER >= 60
+                else f"{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs"
             ),
         )
         afterDelCap = "<i>ᴀʟʟ {} ꜰɪʟᴇꜱ ᴀʀᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀꜰᴛᴇʀ {} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</i>".format(
             len(files_to_delete),
             (
-                f"{delete_time / 60} ᴍɪɴᴜᴛᴇs"
-                if delete_time >= 60
-                else f"{delete_time} sᴇᴄᴏɴᴅs"
+                f"{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs"
+                if FILE_AUTO_DEL_TIMER >= 60
+                else f"{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs"
             ),
         )
-        if settings.get("auto_delete", False):
-            replyed = await message.reply(delCap)
-            await asyncio.sleep(delete_time)
-            for file in files_to_delete:
-                try:
-                    await file.delete()
-                except:
-                    pass
-            return await replyed.edit(afterDelCap)
-        return
+        replyed = await message.reply(delCap)
+        await asyncio.sleep(FILE_AUTO_DEL_TIMER)
+        for file in files_to_delete:
+            try:
+                await file.delete()
+            except:
+                pass
+        return await replyed.edit(
+            afterDelCap,
+        )
     if not data:
         return
 
@@ -555,7 +522,6 @@ async def start(client: Client, message):
         return await message.reply("<b>⚠️ ᴀʟʟ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>")
     files = files_[0]
     settings = await get_settings(grp_id)
-    delete_time = int(settings.get("delete_time", DELETE_TIME))
     CAPTION = settings["caption"]
     f_caption = CAPTION.format(
         file_name=formate_file_name(files.file_name),
@@ -574,26 +540,23 @@ async def start(client: Client, message):
         file_id=file_id,
         caption=f_caption,
         reply_markup=InlineKeyboardMarkup(btn),
-        protect_content=bool(settings.get("file_secure", PROTECT_CONTENT)),
     )
     delCap = "<i>ʏᴏᴜʀ ꜰɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</i>".format(
-        f"{delete_time / 60} ᴍɪɴᴜᴛᴇs"
-        if delete_time >= 60
-        else f"{delete_time} sᴇᴄᴏɴᴅs"
+        f"{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs"
+        if FILE_AUTO_DEL_TIMER >= 60
+        else f"{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs"
     )
     afterDelCap = (
         "<i>ʏᴏᴜʀ ꜰɪʟᴇ ɪs ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</i>".format(
-            f"{delete_time / 60} ᴍɪɴᴜᴛᴇs"
-            if delete_time >= 60
-            else f"{delete_time} sᴇᴄᴏɴᴅs"
+            f"{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs"
+            if FILE_AUTO_DEL_TIMER >= 60
+            else f"{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs"
         )
     )
-    if settings.get("auto_delete", False):
-        replyed = await message.reply(delCap, reply_to_message_id=toDel.id)
-        await asyncio.sleep(delete_time)
-        await toDel.delete()
-        return await replyed.edit(afterDelCap)
-    return toDel
+    replyed = await message.reply(delCap, reply_to_message_id=toDel.id)
+    await asyncio.sleep(FILE_AUTO_DEL_TIMER)
+    await toDel.delete()
+    return await replyed.edit(afterDelCap)
 
 
 @Client.on_message(filters.command("delete"))
@@ -673,64 +636,82 @@ async def delete_all_index(bot, message):
 async def settings(client, message):
     user_id = message.from_user.id if message.from_user else None
     if not user_id:
-        return await message.reply_text(
-            "<b>💔 ᴜɴᴀʙʟᴇ ᴛᴏ ɪᴅᴇɴᴛɪꜰʏ ʏᴏᴜʀ ᴀᴄᴄᴏᴜɴᴛ.</b>"
+        return await message.reply(
+            "<b>💔 ʏᴏᴜ ᴀʀᴇ ᴀɴᴏɴʏᴍᴏᴜꜱ ᴀᴅᴍɪɴ ʏᴏᴜ ᴄᴀɴ'ᴛ ᴜꜱᴇ ᴛʜɪꜱ ᴄᴏᴍᴍᴀɴᴅ...</b>"
         )
-
-    if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        if not await is_check_admin(client, message.chat.id, user_id):
-            return await message.reply_text(
-                "<b>ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀɴ ᴀᴅᴍɪɴ ɪɴ ᴛʜɪꜱ ɢʀᴏᴜᴘ.</b>"
-            )
-        buttons = [[
-            InlineKeyboardButton(
-                "⚠️ ɢᴏ ᴛᴏ ᴘʀɪᴠᴀᴛᴇ ⚠️",
-                url=f"https://t.me/{temp.U_NAME}?start=settings",
-            )
-        ]]
-        return await message.reply_text(
-            "***⚠️ ᴘʟᴇᴀꜱᴇ ᴏᴘᴇɴ ꜱᴇᴛᴛɪɴɢꜱ ᴍᴇɴᴜ ɪɴ ᴘʀɪᴠᴀᴛᴇ!!***\n\n"
-            "⚠️ ɢᴏ ᴛᴏ ᴘʀɪᴠᴀᴛᴇ ⚠️",
+    chat_type = message.chat.type
+    if chat_type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+        return await message.reply_text("<code>ᴜꜱᴇ ᴛʜɪꜱ ᴄᴏᴍᴍᴀɴᴅ ɪɴ ɢʀᴏᴜᴘ.</code>")
+    grp_id = message.chat.id
+    if not await is_check_admin(client, grp_id, message.from_user.id):
+        return await message.reply_text("<b>ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴅᴍɪɴ ɪɴ ᴛʜɪꜱ ɢʀᴏᴜᴘ</b>")
+    settings = await get_settings(grp_id)
+    title = message.chat.title
+    if settings is not None:
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    "ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ",
+                    callback_data=f'setgs#auto_filter#{settings["auto_filter"]}#{grp_id}',
+                ),
+                InlineKeyboardButton(
+                    "ᴏɴ ✓" if settings["auto_filter"] else "ᴏғғ ✗",
+                    callback_data=f'setgs#auto_filter#{settings["auto_filter"]}#{grp_id}',
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "ɪᴍᴅʙ", callback_data=f'setgs#imdb#{settings["imdb"]}#{grp_id}'
+                ),
+                InlineKeyboardButton(
+                    "ᴏɴ ✓" if settings["imdb"] else "ᴏғғ ✗",
+                    callback_data=f'setgs#imdb#{settings["imdb"]}#{grp_id}',
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "sᴘᴇʟʟ ᴄʜᴇᴄᴋ",
+                    callback_data=f'setgs#spell_check#{settings["spell_check"]}#{grp_id}',
+                ),
+                InlineKeyboardButton(
+                    "ᴏɴ ✓" if settings["spell_check"] else "ᴏғғ ✗",
+                    callback_data=f'setgs#spell_check#{settings["spell_check"]}#{grp_id}',
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ",
+                    callback_data=f'setgs#auto_delete#{settings["auto_delete"]}#{grp_id}',
+                ),
+                InlineKeyboardButton(
+                    (
+                        f"{get_readable_time(DELETE_TIME)}"
+                        if settings["auto_delete"]
+                        else "ᴏғғ ✗"
+                    ),
+                    callback_data=f'setgs#auto_delete#{settings["auto_delete"]}#{grp_id}',
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "ʀᴇsᴜʟᴛ ᴍᴏᴅᴇ",
+                    callback_data=f'setgs#link#{settings["link"]}#{str(grp_id)}',
+                ),
+                InlineKeyboardButton(
+                    "⛓ ʟɪɴᴋ" if settings["link"] else "🧲 ʙᴜᴛᴛᴏɴ",
+                    callback_data=f'setgs#link#{settings["link"]}#{str(grp_id)}',
+                ),
+            ],
+            [InlineKeyboardButton("🔗 sʜᴏʀᴛʟɪɴᴋ", callback_data="advanced_settings")],
+            [InlineKeyboardButton("❌ ᴄʟᴏsᴇ ❌", callback_data="close_data")],
+        ]
+        await message.reply_text(
+            text=f"ᴄʜᴀɴɢᴇ ʏᴏᴜʀ sᴇᴛᴛɪɴɢs ꜰᴏʀ <b>'{title}'</b> ᴀs ʏᴏᴜʀ ᴡɪsʜ ✨",
             reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode=enums.ParseMode.HTML,
         )
-
-    if message.chat.type != enums.ChatType.PRIVATE:
-        return await message.reply_text("<b>ᴘʟᴇᴀꜱᴇ ᴜꜱᴇ /settings ɪɴ ᴘʀɪᴠᴀᴛᴇ.</b>")
-
-    groups = await db.get_user_groups(user_id, client)
-    if not groups:
-        return await message.reply_text(
-            "<b>ɴᴏ ᴄᴏɴɴᴇᴄᴛᴇᴅ ɢʀᴏᴜᴘꜱ ꜰᴏᴜɴᴅ.</b>\n\n"
-            "ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ ꜰɪʀꜱᴛ ᴀɴᴅ ᴍᴀᴋᴇ ʏᴏᴜ ᴀᴅᴍɪɴ, ᴛʜᴇɴ ᴜꜱᴇ /settings ʜᴇʀᴇ.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "➕ ᴀᴅᴅ ᴍᴇ ᴛᴏ ɢʀᴏᴜᴘ",
-                    url=f"https://t.me/{temp.U_NAME}?startgroup=start",
-                )]
-            ]),
-        )
-
-    buttons = []
-    for chat in groups:
-        group_id = int(chat["id"])
-        title = chat.get("title") or str(group_id)
-        try:
-            tg_chat = await client.get_chat(group_id)
-            title = tg_chat.title or title
-        except Exception:
-            pass
-        buttons.append([InlineKeyboardButton(
-            f"🛡️ ɢʀᴏᴜᴘ - {title[:40]}\n🆔 ɪᴅ - {group_id}",
-            callback_data=f"settings_group#{group_id}"
-        )])
-
-    buttons.append([InlineKeyboardButton("❌ ᴄʟᴏꜱᴇ ❌", callback_data="close_data")])
-    await message.reply_text(
-        "<b>⚙️ ʜᴇʀᴇ ᴀʀᴇ ʏᴏᴜʀ ᴄᴏɴɴᴇᴄᴛᴇᴅ ɢʀᴏᴜᴘꜱ</b>\n\n"
-        "ꜱᴇʟᴇᴄᴛ ᴀ ɢʀᴏᴜᴘ ᴛᴏ ᴇᴅɪᴛ ɪᴛꜱ ꜱᴇᴛᴛɪɴɢꜱ 👇",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode=enums.ParseMode.HTML,
-    )
+    else:
+        await message.reply_text("<b>ꜱᴏᴍᴇᴛʜɪɴɢ ᴡᴇɴᴛ ᴡʀᴏɴɢ</b>")
 
 
 @Client.on_message(filters.command("set_template"))
@@ -790,16 +771,11 @@ async def send_msg(bot, message):
 
 @Client.on_message(filters.regex("#request"))
 async def send_request(bot, message):
-    settings = await get_settings(message.chat.id)
-    if message.chat.type in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
-        if not settings.get("movie_req", True):
-            return await message.reply_text("❌ ꜱᴇᴛ ᴍᴏᴠɪᴇ ʀᴇQ ɪꜱ ᴅɪsᴀʙʟᴇᴅ ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ.")
     try:
         request = message.text.split(" ", 1)[1]
     except:
         await message.reply_text("<b>‼️ ʏᴏᴜʀ ʀᴇǫᴜᴇsᴛ ɪs ɪɴᴄᴏᴍᴘʟᴇᴛᴇ</b>")
         return
-    request_channel = settings.get("request_channel", REQUEST_CHANNEL)
     buttons = [
         [InlineKeyboardButton("👀 ᴠɪᴇᴡ ʀᴇǫᴜᴇꜱᴛ 👀", url=f"{message.link}")],
         [
@@ -810,7 +786,7 @@ async def send_request(bot, message):
         ],
     ]
     sent_request = await bot.send_message(
-        int(request_channel),
+        REQUEST_CHANNEL,
         script.REQUEST_TXT.format(
             message.from_user.mention, message.from_user.id, request
         ),
