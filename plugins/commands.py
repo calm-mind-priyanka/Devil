@@ -1015,7 +1015,7 @@ async def settings_group_callback(client, query):
     return await query.answer("ᴏᴘᴛɪᴏɴ ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ", show_alert=True)
 
 
-@Client.on_message(filters.command("cancel") & (filters.private | filters.group | filters.supergroup))
+@Client.on_message(filters.command("cancel") & (filters.private | filters.group))
 async def cancel_group_setting_input(client, message):
     key_candidates = [k for k in GROUP_SETTING_PENDING if k[0] == message.from_user.id]
     if not key_candidates:
@@ -1033,7 +1033,7 @@ async def cancel_group_setting_input(client, message):
     )
 
 
-@Client.on_message(filters.text & (filters.private | filters.group | filters.supergroup))
+@Client.on_message(filters.text & (filters.private | filters.group))
 async def group_setting_input(client, message):
     user_id = message.from_user.id
     candidates = [k for k in GROUP_SETTING_PENDING if k[0] == user_id]
