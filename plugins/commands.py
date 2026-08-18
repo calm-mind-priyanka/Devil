@@ -673,6 +673,10 @@ async def delete_all_index(bot, message):
 @Client.on_message(filters.command("settings"))
 async def settings(client, message):
     user_id = message.from_user.id if message.from_user else None
+    # Never let an unfinished settings input capture normal movie searches.
+    if user_id:
+        for _key in [k for k in GROUP_SETTING_PENDING if k[0] == user_id]:
+            GROUP_SETTING_PENDING.pop(_key, None)
     if not user_id:
         return await message.reply_text(
             "<b>💔 ᴜɴᴀʙʟᴇ ᴛᴏ ɪᴅᴇɴᴛɪꜰʏ ʏᴏᴜʀ ᴀᴄᴄᴏᴜɴᴛ.</b>"
@@ -761,12 +765,21 @@ def _back_settings(grp_id):
     return InlineKeyboardButton("⋞ ʙᴀᴄᴋ", callback_data=f"settings_group#{grp_id}")
 
 
-def _setting_page_buttons(grp_id, rows):
-    rows.append([_back_settings(grp_id)])
+def _setting_page_buttons(query, grp_id, rows):
+    private = query.message.chat.type == enums.ChatType.PRIVATE
+    rows.append([InlineKeyboardButton(
+        "⋞ ʙᴀᴄᴋ ᴛᴏ ɢʀᴏᴜᴘ ʟɪꜱᴛ" if private else "⋞ ʙᴀᴄᴋ",
+        callback_data="settings_groups" if private else f"settings_group#{grp_id}"
+    )])
     return InlineKeyboardMarkup(rows)
 
 
 async def _edit_setting_page(query, text, buttons):
+    # Always acknowledge callback queries so Telegram does not leave the spinner running.
+    try:
+        await query.answer()
+    except Exception:
+        pass
     await query.message.edit_text(text, reply_markup=buttons, parse_mode=enums.ParseMode.HTML)
 
 
@@ -807,11 +820,15 @@ async def settings_group_callback(client, query):
     user_id = query.from_user.id
     data = query.data
     if data == "settings_groups":
+        for _key in [k for k in GROUP_SETTING_PENDING if k[0] == user_id]:
+            GROUP_SETTING_PENDING.pop(_key, None)
         await query.answer()
         return await _show_settings_group_list(client, query.message, user_id)
 
     if data.startswith("settings_group#"):
         grp_id = int(data.split("#", 1)[1])
+        for _key in [k for k in GROUP_SETTING_PENDING if k[0] == user_id]:
+            GROUP_SETTING_PENDING.pop(_key, None)
         if not await is_check_admin(client, grp_id, user_id):
             return await query.answer("ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀɴ ᴀᴅᴍɪɴ ᴏꜰ ᴛʜɪꜱ ɢʀᴏᴜᴘ", show_alert=True)
         await query.answer()
@@ -860,14 +877,14 @@ async def settings_group_callback(client, query):
             text = f"<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʙᴏᴛ ꜱᴘᴇʟʟɪɴɢ ᴄʜᴇᴄᴋ ᴍᴇꜱꜱᴀɢᴇꜱᴘᴇʟʟ ᴄʜᴇᴄᴋ - {'ᴏɴ ✅' if value else 'ᴏꜰꜰ ❌'}</b>"
         button_text = "ᴛᴜʀɴ ᴏꜰꜰ" if value else "ᴛᴜʀɴ ᴏɴ"
         await query.answer("ᴏɴ ✅" if value else "ᴏꜰꜰ ❌")
-        return await _edit_setting_page(query, text, _setting_page_buttons(grp_id, [[InlineKeyboardButton(button_text, callback_data=f"grp_setting#{base}_toggle#{grp_id}")]]))
+        return await _edit_setting_page(query, text, _setting_page_buttons(query, grp_id, [[InlineKeyboardButton(button_text, callback_data=f"grp_setting#{base}_toggle#{grp_id}")]]))
 
     if action == "imdb":
         value = bool(settings.get("imdb", False))
         text = f"<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʏᴏᴜʀ ɢʀᴏᴜᴘ ɪᴍᴅʙ sᴇᴛᴛɪɴɢ.\nɪᴍᴅʙ ᴘᴏsᴛᴇʀ - {'ᴏɴ ✅' if value else 'ᴏꜰꜰ ❌'}\nɪᴍᴅʙ ᴛᴇᴍᴘʟᴀᴛᴇ - {settings.get('template', IMDB_TEMPLATE)}</b>"
         rows = [[InlineKeyboardButton("ᴏꜰꜰ ᴘᴏsᴛᴇʀ" if value else "ᴏɴ ᴘᴏsᴛᴇʀ", callback_data=f"grp_setting#imdb_toggle#{grp_id}")],
                 [InlineKeyboardButton("ꜱᴇᴛ ᴛᴇᴍᴘʟᴀᴛᴇ", callback_data=f"grp_setting#set_template#{grp_id}"), InlineKeyboardButton("ᴅᴇꜰᴀᴜʟᴛ ᴛᴇᴍᴘʟᴀᴛᴇ", callback_data=f"grp_setting#default_template#{grp_id}")]]
-        return await _edit_setting_page(query, text, _setting_page_buttons(grp_id, rows))
+        return await _edit_setting_page(query, text, _setting_page_buttons(query, grp_id, rows))
 
     if action == "imdb_toggle":
         value = not bool(settings.get("imdb", False))
@@ -882,7 +899,7 @@ async def settings_group_callback(client, query):
         text = f"<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʏᴏᴜʀ ɢʀᴏᴜᴘ ɢɪᴠᴇɴ ꜰɪʟᴇs ᴅᴇʟᴇᴛᴇ sᴇᴛᴛɪɴɢ.\nᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ - {'ᴏɴ ✅' if enabled else 'ᴏꜰꜰ ❌'}\nᴅᴇʟᴇᴛᴇ ᴛɪᴍᴇ - <code>{get_readable_time(seconds)}</code></b>"
         rows = [[InlineKeyboardButton("ᴛᴜʀɴ ᴏꜰꜰ" if enabled else "ᴛᴜʀɴ ᴏɴ", callback_data=f"grp_setting#auto_delete_toggle#{grp_id}")],
                 [InlineKeyboardButton("ꜱᴇᴛ ᴛɪᴍᴇ", callback_data=f"grp_setting#delete_time#{grp_id}")]]
-        return await _edit_setting_page(query, text, _setting_page_buttons(grp_id, rows))
+        return await _edit_setting_page(query, text, _setting_page_buttons(query, grp_id, rows))
 
     if action == "auto_delete_toggle":
         await save_group_settings(grp_id, "auto_delete", not bool(settings.get("auto_delete", False)))
@@ -892,7 +909,7 @@ async def settings_group_callback(client, query):
         is_link = bool(settings.get("link", False))
         text = f"<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʏᴏᴜʀ ɢʀᴏᴜᴘ ɢɪᴠᴇɴ ʀᴇꜱᴜʟᴛ ᴍᴏᴅᴇ.\nʀᴇꜱᴜʟᴛ ᴍᴏᴅᴇ - {'ʟɪɴᴋs 🖇' if is_link else 'ʙᴜᴛᴛᴏɴs 🎯'}</b>"
         rows = [[InlineKeyboardButton("ꜱᴇᴛ ʙᴜᴛᴛᴏɴ ᴍᴏᴅᴇ" if is_link else "ꜱᴇᴛ ʟɪɴᴋs ᴍᴏᴅᴇ", callback_data=f"grp_setting#result_toggle#{grp_id}")]]
-        return await _edit_setting_page(query, text, _setting_page_buttons(grp_id, rows))
+        return await _edit_setting_page(query, text, _setting_page_buttons(query, grp_id, rows))
 
     if action == "result_toggle":
         await save_group_settings(grp_id, "link", not bool(settings.get("link", False)))
@@ -902,7 +919,7 @@ async def settings_group_callback(client, query):
         verify = bool(settings.get("is_verify", IS_VERIFY))
         text = f"<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʏᴏᴜʀ ꜰɪʟᴇs ᴍᴏᴅᴇ, ʙᴏᴛ ʜᴀᴠᴇ ᴛᴡᴏ ᴍᴏᴅᴇs: ᴠᴇʀɪꜰʏ ᴍᴏᴅᴇ & ꜱʜᴏʀᴛʟɪɴᴋ ᴍᴏᴅᴇ.\nꜰɪʟᴇ ᴍᴏᴅᴇ - {'♻️ ᴠᴇʀɪꜰʏ' if verify else '📎 ꜱʜᴏʀᴛʟɪɴᴋ'}</b>"
         rows = [[InlineKeyboardButton("ꜱᴇᴛꜱʜᴏʀᴛʟɪɴᴋ ᴍᴏᴅᴇ" if verify else "ꜱᴇᴛ ᴠᴇʀɪꜰʏ ᴍᴏᴅᴇ", callback_data=f"grp_setting#file_mode_toggle#{grp_id}")]]
-        return await _edit_setting_page(query, text, _setting_page_buttons(grp_id, rows))
+        return await _edit_setting_page(query, text, _setting_page_buttons(query, grp_id, rows))
 
     if action == "file_mode_toggle":
         await save_group_settings(grp_id, "is_verify", not bool(settings.get("is_verify", IS_VERIFY)))
@@ -912,7 +929,7 @@ async def settings_group_callback(client, query):
         caption = settings.get("caption", FILE_CAPTION)
         text = f"<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʏᴏᴜʀ ɢʀᴏᴜᴘ ɢɪᴠᴇɴ ꜰɪʟᴇ ᴄᴀᴘᴛɪᴏɴ.\nꜰɪʟᴇ ᴄᴀᴘᴛɪᴏɴ - <code>{caption}</code></b>"
         rows = [[InlineKeyboardButton("ꜱᴇᴛ ᴄᴀᴘᴛɪᴏɴ", callback_data=f"grp_setting#set_caption#{grp_id}"), InlineKeyboardButton("ᴅᴇꜰᴀᴜʟᴛ ᴄᴀᴘᴛɪᴏɴ", callback_data=f"grp_setting#default_caption#{grp_id}")]]
-        return await _edit_setting_page(query, text, _setting_page_buttons(grp_id, rows))
+        return await _edit_setting_page(query, text, _setting_page_buttons(query, grp_id, rows))
 
     if action == "default_caption":
         await save_group_settings(grp_id, "caption", FILE_CAPTION)
@@ -929,7 +946,7 @@ async def settings_group_callback(client, query):
             "max_results": f"ꜱᴇɴᴅ ᴍᴀx ʀᴇꜱᴜʟᴛs (1-20). ᴄᴜʀʀᴇɴᴛ: <code>{settings.get('max_results', MAX_BTN)}</code>",
         }
         rows = [[InlineKeyboardButton("ᴄᴀɴᴄᴇʟ", callback_data=f"setting_cancel#{action}#{grp_id}")]]
-        return await _edit_setting_page(query, f"<b>{prompts[action]}</b>", _setting_page_buttons(grp_id, rows))
+        return await _edit_setting_page(query, f"<b>{prompts[action]}</b>", _setting_page_buttons(query, grp_id, rows))
 
     if action == "default_template":
         await save_group_settings(grp_id, "template", IMDB_TEMPLATE)
@@ -939,7 +956,7 @@ async def settings_group_callback(client, query):
         enabled = bool(settings.get("movie_req", True)); channel = settings.get("request_channel", REQUEST_CHANNEL)
         text = f"<b>📢 ᴡʜᴀᴛ ɪs ʀᴇǫ ᴄʜᴀɴɴᴇʟ ??\n\nɪꜰ ʏᴏᴜʀ ɢʀᴏᴜᴘ ᴍᴇᴍʙᴇʀꜱ ᴅᴏ ɴᴏᴛ ꜰɪɴᴅ ᴛʜᴇ ᴍᴏᴠɪᴇ ᴛʜᴇʏ ʟɪᴋᴇ, ᴛʜᴇʏ ᴄᴀɴ ꜱᴇɴᴅ ʏᴏᴜ ᴀ ʀᴇǫᴜᴇꜱᴛ...\n\nᴍᴏᴠɪᴇ ʀᴇǫ ᴄʜᴀɴɴᴇʟ - <code>{channel}</code>\nᴍᴏᴠɪᴇ ʀᴇQ - {'ᴏɴ ✅' if enabled else 'ᴏꜰꜰ ❌'}</b>"
         rows = [[InlineKeyboardButton("ᴛᴜʀɴ ᴏꜰꜰ" if enabled else "ᴛᴜʀɴ ᴏɴ", callback_data=f"grp_setting#movie_req_toggle#{grp_id}")], [InlineKeyboardButton("ꜱᴇᴛ ᴄʜᴀɴɴᴇʟ", callback_data=f"grp_setting#request_channel#{grp_id}"), InlineKeyboardButton("ᴅᴇʟᴇᴛᴇ ᴄʜᴀɴɴᴇʟ", callback_data=f"grp_setting#delete_request_channel#{grp_id}")]]
-        return await _edit_setting_page(query, text, _setting_page_buttons(grp_id, rows))
+        return await _edit_setting_page(query, text, _setting_page_buttons(query, grp_id, rows))
 
     if action == "movie_req_toggle":
         await save_group_settings(grp_id, "movie_req", not bool(settings.get("movie_req", True)))
@@ -947,7 +964,7 @@ async def settings_group_callback(client, query):
 
     if action == "request_channel":
         GROUP_SETTING_PENDING[(user_id, grp_id)] = "request_channel"
-        return await _edit_setting_page(query, "<b>ꜱᴇɴᴅ ʀᴇǫ ᴄʜᴀɴɴᴇʟ ɪᴅ</b>", _setting_page_buttons(grp_id, []))
+        return await _edit_setting_page(query, "<b>ꜱᴇɴᴅ ʀᴇǫ ᴄʜᴀɴɴᴇʟ ɪᴅ</b>", _setting_page_buttons(query, grp_id, [[InlineKeyboardButton("ᴄᴀɴᴄᴇʟ", callback_data=f"setting_cancel#request_channel#{grp_id}")]]))
     if action == "delete_request_channel":
         await save_group_settings(grp_id, "request_channel", REQUEST_CHANNEL)
         return await settings_group_callback(client, type("Q", (), {"data":f"grp_setting#movie_req#{grp_id}", "from_user":query.from_user, "message":query.message, "answer":query.answer})())
@@ -978,7 +995,7 @@ async def settings_group_callback(client, query):
                 f"2️⃣ ᴛᴜᴛᴏʀɪᴀʟ ʟɪɴᴋ 2 - {settings.get('tutorial_2', TUTORIAL_2)}\n"
                 f"3️⃣ ᴛᴜᴛᴏʀɪᴀʟ ʟɪɴᴋ 3 - {settings.get('tutorial_3', TUTORIAL_3)}")
         rows = [[InlineKeyboardButton("ʀᴇsᴇᴛ ᴀʟʟ", callback_data=f"grp_setting#reset_all#{grp_id}")]]
-        return await _edit_setting_page(query, text, _setting_page_buttons(grp_id, rows))
+        return await _edit_setting_page(query, text, _setting_page_buttons(query, grp_id, rows))
 
     if action == "reset_all":
         await save_default_settings(grp_id)
@@ -991,10 +1008,10 @@ async def settings_group_callback(client, query):
         current = settings.get("fsub_id", AUTH_CHANNEL)
         text = f"<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪʙᴇ ᴄʜᴀɴɴᴇʟ ɪᴅ, ʏᴏᴜ ᴄᴀɴ ꜱᴇᴛ ᴍᴜʟᴛɪᴘʟᴇ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪʙᴇ ᴄʜᴀɴɴᴇʟs.\n\nꜰᴏʀᴄᴇ ᴄʜᴀɴɴᴇʟ - <code>{current}</code></b>"
         rows = [[InlineKeyboardButton("ꜱᴇᴛ ᴄʜᴀɴɴᴇʟ", callback_data=f"grp_setting#set_force_channel#{grp_id}"), InlineKeyboardButton("ᴅᴇʟᴇᴛᴇ ᴄʜᴀɴɴᴇʟ", callback_data=f"grp_setting#delete_force_channel#{grp_id}")]]
-        return await _edit_setting_page(query, text, _setting_page_buttons(grp_id, rows))
+        return await _edit_setting_page(query, text, _setting_page_buttons(query, grp_id, rows))
     if action == "set_force_channel":
         GROUP_SETTING_PENDING[(user_id, grp_id)] = "force_channel"
-        return await _edit_setting_page(query, "<b>ꜱᴇɴᴅ ᴛʜᴇ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪʙᴇ ᴄʜᴀɴɴᴇʟ ɪᴅ</b>", _setting_page_buttons(grp_id, []))
+        return await _edit_setting_page(query, "<b>ꜱᴇɴᴅ ᴛʜᴇ ꜰᴏʀᴄᴇ ꜱᴜʙꜱᴄʀɪʙᴇ ᴄʜᴀɴɴᴇʟ ɪᴅs (comma separated for multiple)</b>", _setting_page_buttons(query, grp_id, [[InlineKeyboardButton("ᴄᴀɴᴄᴇʟ", callback_data=f"setting_cancel#force_channel#{grp_id}")]]))
     if action == "delete_force_channel":
         await save_group_settings(grp_id, "fsub_id", AUTH_CHANNEL)
         await save_group_settings(grp_id, "fsub_channels", [AUTH_CHANNEL])
@@ -1004,10 +1021,10 @@ async def settings_group_callback(client, query):
         current = settings.get("max_results", MAX_BTN)
         text = f"<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʙᴏᴛ ɢɪᴠᴇɴ ᴍᴀx ꜰɪʟᴇs ɪɴ ʙᴜᴛᴛᴏɴ...ᴍᴀx ʀᴇꜱᴜʟᴛs - <code>{current}</code></b>"
         rows = [[InlineKeyboardButton("ꜱᴇᴛ ᴍᴀx ʀᴇꜱᴜʟᴛ", callback_data=f"grp_setting#set_max_results#{grp_id}"), InlineKeyboardButton("ᴅᴇꜰᴀᴜʟᴛ ᴍᴀx ʀᴇꜱᴜʟᴛ", callback_data=f"grp_setting#default_max_results#{grp_id}")]]
-        return await _edit_setting_page(query, text, _setting_page_buttons(grp_id, rows))
+        return await _edit_setting_page(query, text, _setting_page_buttons(query, grp_id, rows))
     if action == "set_max_results":
         GROUP_SETTING_PENDING[(user_id, grp_id)] = "max_results"
-        return await _edit_setting_page(query, "<b>ꜱᴇɴᴅ ᴍᴀx ʀᴇꜱᴜʟᴛs (1-20)</b>", _setting_page_buttons(grp_id, []))
+        return await _edit_setting_page(query, "<b>ꜱᴇɴᴅ ᴍᴀx ʀᴇꜱᴜʟᴛs (1-20)</b>", _setting_page_buttons(query, grp_id, [[InlineKeyboardButton("ᴄᴀɴᴄᴇʟ", callback_data=f"setting_cancel#max_results#{grp_id}")]]))
     if action == "default_max_results":
         await save_group_settings(grp_id, "max_results", MAX_BTN)
         return await settings_group_callback(client, type("Q", (), {"data":f"grp_setting#max_results#{grp_id}", "from_user":query.from_user, "message":query.message, "answer":query.answer})())
@@ -1033,7 +1050,7 @@ async def cancel_group_setting_input(client, message):
     )
 
 
-@Client.on_message(filters.text & (filters.private | filters.group))
+@Client.on_message(filters.text & ~filters.command("cancel") & (filters.private | filters.group))
 async def group_setting_input(client, message):
     user_id = message.from_user.id
     candidates = [k for k in GROUP_SETTING_PENDING if k[0] == user_id]
