@@ -17,7 +17,7 @@ from pyrogram.types import (
     InputMediaAnimation,
     InputMediaPhoto,
 )
-from pyrogram import Client, filters, enums
+from pyrogram import Client, filters, enums, ContinuePropagation
 from pyrogram.errors import *  # FloodWait, UserIsBlocked, MessageNotModified, PeerIdInvalid, ChatAdminRequired
 from utils import (
     temp,
@@ -1186,6 +1186,10 @@ async def pmfile_cb(client, query):
 
 @Client.on_callback_query()
 async def cb_handler(client: Client, query: CallbackQuery):
+    # These callbacks belong to the canonical settings handlers in commands.py / advanced_settings.py.
+    # Do not let this legacy catch-all callback swallow them.
+    if query.data and (query.data.startswith(("settings_group#", "settings_groups", "grp_setting#", "file_mode#", "setting_cancel#", "adv_", "advanced_settings"))):
+        raise ContinuePropagation
     if query.data == "close_data":
         try:
             user = query.message.reply_to_message.from_user.id
