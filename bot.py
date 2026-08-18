@@ -1,13 +1,10 @@
-import sys
-import glob
-import importlib
-from pathlib import Path
 from pyrogram import idle
 import logging
 import logging.config
+from pathlib import Path
 
 # Get logging configurations
-logging.config.fileConfig("logging.conf")
+logging.config.fileConfig(str(Path(__file__).with_name("logging.conf")))
 logging.getLogger().setLevel(logging.INFO)
 logging.getLogger("pyrogram").setLevel(logging.ERROR)
 logging.getLogger("imdbpy").setLevel(logging.ERROR)
@@ -35,8 +32,6 @@ from Jisshu.bot import JisshuBot
 from Jisshu.util.keepalive import ping_server
 from Jisshu.bot.clients import initialize_clients
 
-ppath = "plugins/*.py"
-files = glob.glob(ppath)
 JisshuBot.start()
 loop = asyncio.get_event_loop()
 
@@ -49,17 +44,8 @@ async def Jisshu_start():
     bot_info = await JisshuBot.get_me()
     JisshuBot.username = bot_info.username
     await initialize_clients()
-    for name in files:
-        with open(name) as a:
-            patt = Path(a.name)
-            plugin_name = patt.stem.replace(".py", "")
-            plugins_dir = Path(f"plugins/{plugin_name}.py")
-            import_path = "plugins.{}".format(plugin_name)
-            spec = importlib.util.spec_from_file_location(import_path, plugins_dir)
-            load = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(load)
-            sys.modules["plugins." + plugin_name] = load
-            print("JisshuBot Imported => " + plugin_name)
+    # Plugins are already loaded by Pyrogram via plugins={"root": "plugins"}.
+    # Do not manually import them again: duplicate handlers break callbacks.
     if ON_HEROKU:
         asyncio.create_task(ping_server())
     b_users, b_chats = await db.get_banned()
