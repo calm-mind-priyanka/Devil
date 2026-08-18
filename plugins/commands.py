@@ -702,6 +702,7 @@ async def settings(client, message):
                     callback_data=f'setgs#link#{settings["link"]}#{str(grp_id)}',
                 ),
             ],
+            [InlineKeyboardButton("🔗 sʜᴏʀᴛʟɪɴᴋ", callback_data="advanced_settings")],
             [InlineKeyboardButton("❌ ᴄʟᴏsᴇ ❌", callback_data="close_data")],
         ]
         await message.reply_text(
