@@ -72,9 +72,15 @@ def _file_mode_caption(settings, file, mention):
 
 def _file_mode_markup(settings, file_id):
     tutorial = settings.get("tutorial", TUTORIAL)
+    mode = settings.get("file_mode_type", "verify")
+    if mode == "shortlink":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📎 ꜱʜᴏʀᴛʟɪɴᴋ", callback_data=f"stream#{file_id}")],
+            [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
+        ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📁 ꜰɪʟᴇ", callback_data=f"stream#{file_id}"),
-         InlineKeyboardButton("ʜᴏᴡ ᴛᴏ ᴠᴇʀɪꜰʏ ❓", url=tutorial)],
+         InlineKeyboardButton("ʜᴏᴡ ᴛᴏ ᴠᴇʀɪғʏ ❓", url=tutorial)],
         [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
     ])
 
@@ -358,7 +364,7 @@ async def start(client: Client, message):
                 btn.append([[InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}")]][0])
             await client.send_photo(
                 chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=script.FORCESUB_TEXT,
-                reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML,
+                reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML,
             )
             return
     else:
@@ -392,7 +398,7 @@ async def start(client: Client, message):
         if btn:
             await client.send_photo(
                 chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=script.FORCESUB_TEXT,
-                reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML,
+                reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML,
             )
             return
 
@@ -562,7 +568,7 @@ async def start(client: Client, message):
         file_id=file_id,
         caption=f_caption,
         protect_content=bool(settings.get("file_secure", PROTECT_CONTENT)),
-        reply_markup=InlineKeyboardMarkup(btn),
+        reply_markup=reply_markup,
     )
     delCap = "<i>ʏᴏᴜʀ ꜰɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</i>".format(
         f"{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs"
@@ -651,7 +657,7 @@ async def delete_all_index(bot, message):
         return
     await message.reply_text(
         "<b>ᴛʜɪs ᴡɪʟʟ ᴅᴇʟᴇᴛᴇ ᴀʟʟ ɪɴᴅᴇxᴇᴅ ꜰɪʟᴇs.\nᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ᴄᴏɴᴛɪɴᴜᴇ??</b>",
-        reply_markup=InlineKeyboardMarkup(btn),
+        reply_markup=reply_markup,
     )
 
 
@@ -768,7 +774,7 @@ async def send_request(bot, message):
     ]
     await message.reply_text(
         "<b>✅ sᴜᴄᴄᴇꜱꜱғᴜʟʟʏ ʏᴏᴜʀ ʀᴇǫᴜᴇꜱᴛ ʜᴀꜱ ʙᴇᴇɴ ᴀᴅᴅᴇᴅ, ᴘʟᴇᴀꜱᴇ ᴡᴀɪᴛ ꜱᴏᴍᴇᴛɪᴍᴇ...</b>",
-        reply_markup=InlineKeyboardMarkup(btn),
+        reply_markup=reply_markup,
     )
 
 
@@ -842,7 +848,7 @@ async def deletemultiplefiles(bot, message):
     ]
     await message.reply_text(
         text=f"<b>ᴛᴏᴛᴀʟ ꜰɪʟᴇs ꜰᴏᴜɴᴅ - <code>{total}</code>\n\nᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ᴄᴏɴᴛɪɴᴜᴇ?\n\nɴᴏᴛᴇ:- ᴛʜɪs ᴄᴏᴜʟᴅ ʙᴇ ᴀ ᴅᴇsᴛʀᴜᴄᴛɪᴠᴇ ᴀᴄᴛɪᴏɴ!!</b>",
-        reply_markup=InlineKeyboardMarkup(btn),
+        reply_markup=reply_markup,
         parse_mode=enums.ParseMode.HTML,
     )
 
