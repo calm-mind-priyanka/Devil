@@ -4,313 +4,425 @@ from pyrogram import Client, filters, enums, ContinuePropagation
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from info import *
-from utils import get_settings, save_group_settings, is_check_admin, get_readable_time
+from utils import get_settings, save_group_settings, is_check_admin, get_readable_time, save_default_settings
 from database.users_chats_db import db
 
-# Temporary per-admin conversation state. The actual values are stored in MongoDB.
+# Per-user pending input. Keys are (user_id, group_id).
 PENDING = {}
 
 
-def _cancel_button():
-    return [InlineKeyboardButton("/cancel", callback_data="adv_cancel")]
+def _cancel_button(group_id):
+    return [InlineKeyboardButton("/cancel", callback_data=f"set_cancel#{group_id}")]
 
 
-def _back(callback):
-    return [InlineKeyboardButton("⋞ ʙᴀᴄᴋ", callback_data=callback)]
+def _back(group_id):
+    return [InlineKeyboardButton("⋞ ʙᴀᴄᴋ", callback_data=f"set_back#main#{group_id}")]
+
+
+async def _group_title(client, group_id):
+    try:
+        chat = await client.get_chat(int(group_id))
+        return chat.title or str(group_id)
+    except Exception:
+        return str(group_id)
 
 
 def _main_settings_buttons(settings, grp_id):
+    def onoff(key):
+        return "ON ✅" if settings.get(key) else "OFF ❌"
     return [
-        [
-            InlineKeyboardButton("ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ", callback_data=f"setgs#auto_filter#{settings['auto_filter']}#{grp_id}"),
-            InlineKeyboardButton("ᴏɴ ✓" if settings["auto_filter"] else "ᴏғғ ✗", callback_data=f"setgs#auto_filter#{settings['auto_filter']}#{grp_id}"),
-        ],
-        [
-            InlineKeyboardButton("ɪᴍᴅʙ", callback_data=f"setgs#imdb#{settings['imdb']}#{grp_id}"),
-            InlineKeyboardButton("ᴏɴ ✓" if settings["imdb"] else "ᴏғғ ✗", callback_data=f"setgs#imdb#{settings['imdb']}#{grp_id}"),
-        ],
-        [
-            InlineKeyboardButton("sᴘᴇʟʟ ᴄʜᴇᴄᴋ", callback_data=f"setgs#spell_check#{settings['spell_check']}#{grp_id}"),
-            InlineKeyboardButton("ᴏɴ ✓" if settings["spell_check"] else "ᴏғғ ✗", callback_data=f"setgs#spell_check#{settings['spell_check']}#{grp_id}"),
-        ],
-        [
-            InlineKeyboardButton("ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ", callback_data=f"setgs#auto_delete#{settings['auto_delete']}#{grp_id}"),
-            InlineKeyboardButton(get_readable_time(DELETE_TIME) if settings["auto_delete"] else "ᴏғғ ✗", callback_data=f"setgs#auto_delete#{settings['auto_delete']}#{grp_id}"),
-        ],
-        [
-            InlineKeyboardButton("ʀᴇsᴜʟᴛ ᴍᴏᴅᴇ", callback_data=f"setgs#link#{settings['link']}#{grp_id}"),
-            InlineKeyboardButton("⛓ ʟɪɴᴋ" if settings["link"] else "🧲 ʙᴜᴛᴛᴏɴ", callback_data=f"setgs#link#{settings['link']}#{grp_id}"),
-        ],
-        [InlineKeyboardButton("🔗 sʜᴏʀᴛʟɪɴᴋ", callback_data="advanced_settings")],
-        [InlineKeyboardButton("❌ ᴄʟᴏsᴇ ❌", callback_data="close_data")],
+        [InlineKeyboardButton(f"📝 AUTO FILTER · {onoff('auto_filter')}", callback_data=f"set_page#auto_filter#{grp_id}"),
+         InlineKeyboardButton(f"🔒 FILE SECURE · {onoff('file_secure')}", callback_data=f"set_page#file_secure#{grp_id}")],
+        [InlineKeyboardButton(f"🎬 IMDB · {onoff('imdb')}", callback_data=f"set_page#imdb#{grp_id}"),
+         InlineKeyboardButton(f"🔍 SPELL CHECK · {onoff('spell_check')}", callback_data=f"set_page#spell_check#{grp_id}")],
+        [InlineKeyboardButton(f"🗑️ AUTO DELETE · {onoff('auto_delete')}", callback_data=f"set_page#auto_delete#{grp_id}"),
+         InlineKeyboardButton(f"📚 RESULT MODE · {'LINKS 🖇' if settings.get('link') else 'BUTTONS 🎯'}", callback_data=f"set_page#link#{grp_id}")],
+        [InlineKeyboardButton(f"📁 FILE MODE · {'VERIFY ♻️' if settings.get('is_verify') else 'SHORTLINK 📎'}", callback_data=f"set_page#file_mode#{grp_id}"),
+         InlineKeyboardButton("📝 FILES CAPTIONS", callback_data=f"set_page#caption#{grp_id}")],
+        [InlineKeyboardButton("🎬 TUTORIAL LINK", callback_data=f"set_page#tutorial#{grp_id}"),
+         InlineKeyboardButton("🖇️ SET SHORTLINK", callback_data=f"set_page#shortlink#{grp_id}")],
+        [InlineKeyboardButton("📢 SET MOVIE REQ", callback_data=f"set_page#request_channel#{grp_id}"),
+         InlineKeyboardButton("ℹ️ DETAILS", callback_data=f"set_page#details#{grp_id}")],
+        [InlineKeyboardButton("📢 FORCE CHANNEL", callback_data=f"set_page#fsub#{grp_id}"),
+         InlineKeyboardButton(f"🔢 SET MAX RESULTS · {settings.get('max_results', MAX_BTN)}", callback_data=f"set_page#max_results#{grp_id}")],
+        [InlineKeyboardButton("↩️ BACK TO GROUP LIST", callback_data=f"set_groups#{grp_id}"), InlineKeyboardButton("‼️ CLOSE SETTINGS MENU ‼️", callback_data=f"set_close#{grp_id}")],
     ]
 
 
-async def show_main_settings(query, grp_id):
-    settings = await get_settings(grp_id)
-    title = query.message.chat.title or "Group"
-    await query.message.edit_text(
-        f"ᴄʜᴀɴɢᴇ ʏᴏᴜʀ sᴇᴛᴛɪɴɢs ꜰᴏʀ <b>'{title}'</b> ᴀs ʏᴏᴜʀ ᴡɪsʜ ✨",
-        reply_markup=InlineKeyboardMarkup(_main_settings_buttons(settings, grp_id)),
-        parse_mode=enums.ParseMode.HTML,
-    )
+async def show_group_list(client, target, direct_group_id=None):
+    user_id = target.from_user.id
+    groups = []
+    async for chat in db.get_all_chats():
+        gid = chat.get("id")
+        if not gid:
+            continue
+        try:
+            member = await client.get_chat_member(int(gid), user_id)
+            if member.status in (enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER):
+                title = chat.get("title") or str(gid)
+                groups.append((int(gid), title))
+        except Exception:
+            continue
+
+    if direct_group_id is not None:
+        try:
+            gid = int(direct_group_id)
+            if any(g[0] == gid for g in groups):
+                return await show_group_settings(client, target, gid)
+        except Exception:
+            pass
+
+    if not groups:
+        text = "❌ <b>ɪ ᴄᴏᴜʟᴅ ɴᴏᴛ ғɪɴᴅ ᴀɴʏ ɢʀᴏᴜᴘs ᴡʜᴇʀᴇ ʏᴏᴜ ᴀʀᴇ ᴀɴ ᴀᴅᴍɪɴ.</b>"
+        if target.chat.type == enums.ChatType.PRIVATE:
+            return await target.reply_text(text)
+        return await target.message.reply_text(text)
+
+    buttons = []
+    for gid, title in groups:
+        buttons.append([InlineKeyboardButton(f"{title} · {gid}", callback_data=f"set_group#{gid}")])
+    markup = InlineKeyboardMarkup(buttons)
+    text = "⚙️ <b>ꜱᴇʟᴇᴄᴛ ᴛʜᴇ ɢʀᴏᴜᴘ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ᴍᴀɴᴀɢᴇ:</b>"
+    if target.chat.type == enums.ChatType.PRIVATE:
+        return await target.reply_text(text, reply_markup=markup)
+    return await target.message.reply_text(text, reply_markup=markup)
 
 
-async def show_advanced(query, grp_id):
-    settings = await get_settings(grp_id)
-    status = "ᴏɴ" if settings.get("is_verify") else "ᴏꜰꜰ"
-    text = (
-        "<b>⚙️ ᴀᴅᴠᴀɴᴄᴇᴅ ꜱᴇᴛᴛɪɴɢꜱ</b>\n"
-        "ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʏᴏᴜʀ ꜱʜᴏʀᴛʟɪɴᴋꜱ ᴀɴᴅ ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ꜱᴇᴛᴛɪɴɢꜱ ꜰʀᴏᴍ ʜᴇʀᴇ.\n\n"
-        "<b>ꜱᴇʟᴇᴄᴛ ᴀɴ ᴏᴘᴛɪᴏɴ ʙᴇʟᴏᴡ 👇</b>\n"
-        f"<b>✅ ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ : {status}</b>"
-    )
-    buttons = [
-        [InlineKeyboardButton("ᴛᴜʀɴ ᴏꜰꜰ" if settings.get("is_verify") else "ᴛᴜʀɴ ᴏɴ", callback_data="adv_toggle_verify")],
-        [InlineKeyboardButton("🔗 sʜᴏʀᴛʟɪɴᴋ", callback_data="adv_shortlinks")],
-        [InlineKeyboardButton("⏱ ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ɢᴀᴘ", callback_data="adv_gaps")],
-        [InlineKeyboardButton("📹 ᴛᴜᴛᴏʀɪᴀʟ", callback_data="adv_tutorials")],
-        _back("adv_back_settings"),
-    ]
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
+async def show_group_settings(client, target, grp_id):
+    user_id = target.from_user.id
+    if not await is_check_admin(client, int(grp_id), user_id):
+        if hasattr(target, "answer"):
+            return await target.answer("ᴏɴʟʏ ɢʀᴏᴜᴘ ᴏᴡɴᴇʀ/ᴀᴅᴍɪɴ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ᴛʜɪs", show_alert=True)
+        return await target.reply_text("<b>ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀɴ ᴀᴅᴍɪɴ ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ.</b>")
+    settings = await get_settings(int(grp_id))
+    title = await _group_title(client, grp_id)
+    text = f"<b>⚙️ ɢʀᴏᴜᴘ sᴇᴛᴛɪɴɢs</b>\n\n<b>ɴᴀᴍᴇ:</b> {title}\n<b>ɪᴅ:</b> <code>{grp_id}</code>"
+    markup = InlineKeyboardMarkup(_main_settings_buttons(settings, int(grp_id)))
+    if hasattr(target, "message"):
+        await target.message.edit_text(text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+        return
+    await target.reply_text(text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
 
 
-async def show_shortlinks(query, grp_id):
-    settings = await get_settings(grp_id)
-    lines = [
-        "<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʏᴏᴜʀ ᴠᴇʀɪꜰʏ ᴍᴏᴅᴇ</b>",
-        "<b>ꜱᴇᴛ ʏᴏᴜʀ 1ꜱᴛ, 2ɴᴅ ᴀɴᴅ 3ʀᴅ ꜱʜᴏʀᴛʟɪɴᴋ ᴜʀʟ ᴀɴᴅ ᴀᴘɪ...</b>",
-    ]
-    for label, domain, api in (
-        ("1ꜱᴛ", settings.get("shortner"), settings.get("api")),
-        ("2ɴᴅ", settings.get("shortner_two"), settings.get("api_two")),
-        ("3ʀᴅ", settings.get("shortner_three"), settings.get("api_three")),
-    ):
-        if domain or api:
-            lines.append(f"<b>ꜱʜᴏʀᴛʟɪɴᴋ {label}</b> - <code>{domain or ''}</code> <code>{api or ''}</code>")
-    buttons = [
-        [InlineKeyboardButton("1sᴛ sʜᴏʀᴛʟɪɴᴋ", callback_data="adv_short#1"), InlineKeyboardButton("2ɴᴅ sʜᴏʀᴛʟɪɴᴋ", callback_data="adv_short#2")],
-        [InlineKeyboardButton("3ʀᴅ sʜᴏʀᴛʟɪɴᴋ", callback_data="adv_short#3")],
-        _back("adv_back_advanced"),
-    ]
-    await query.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
+def _page_text(key, settings):
+    if key == "auto_filter":
+        return "<b>📝 AUTO FILTER</b>\n\nAuto Filter searches indexed files for messages sent in the group."
+    if key == "file_secure":
+        return "<b>🔒 FILE SECURE</b>\n\nProtect delivered files from forwarding/saving where Telegram supports protect_content."
+    if key == "imdb":
+        return f"<b>🎬 IMDB</b>\n\nPoster: {'ON ✅' if settings.get('imdb') else 'OFF ❌'}\n\n<code>{settings.get('template', IMDB_TEMPLATE)}</code>"
+    if key == "spell_check":
+        return "<b>🔍 SPELL CHECK</b>\n\nCorrect common spelling variations before searching."
+    if key == "auto_delete":
+        return f"<b>🗑️ AUTO DELETE</b>\n\nEnabled: {'ON ✅' if settings.get('auto_delete') else 'OFF ❌'}\nDelete time: <code>{get_readable_time(settings.get('delete_time', DELETE_TIME))}</code>"
+    if key == "link":
+        return f"<b>📚 RESULT MODE</b>\n\nCurrent: {'LINKS 🖇' if settings.get('link') else 'BUTTONS 🎯'}"
+    if key == "file_mode":
+        return f"<b>📁 FILE MODE</b>\n\nBot modes: Verify and Shortlink.\nCurrent: {'♻️ VERIFY' if settings.get('is_verify') else '📎 SHORTLINK'}"
+    if key == "caption":
+        return f"<b>📝 FILES CAPTIONS</b>\n\nCurrent caption:\n<code>{settings.get('caption', FILE_CAPTION)}</code>\n\nSupported placeholder: {{file_name}}"
+    if key == "tutorial":
+        return f"<b>🎬 TUTORIAL LINK</b>\n\n1: {settings.get('tutorial') or TUTORIAL}\n2: {settings.get('tutorial_2') or TUTORIAL_2}\n3: {settings.get('tutorial_3') or TUTORIAL_3}"
+    if key == "shortlink":
+        return f"<b>🖇️ SET SHORTLINK</b>\n\n1: {settings.get('shortner')}\n2: {settings.get('shortner_two')}\n3: {settings.get('shortner_three')}"
+    if key == "request_channel":
+        return f"<b>📢 SET MOVIE REQ</b>\n\nCurrent request channel: <code>{settings.get('request_channel', REQUEST_CHANNEL)}</code>"
+    if key == "fsub":
+        channels = settings.get('fsub_channels') or [settings.get('fsub_id', AUTH_CHANNEL)]
+        return "<b>📢 FORCE CHANNEL</b>\n\nMultiple force-subscribe channels are supported.\n\n" + "\n".join(f"• <code>{c}</code>" for c in channels)
+    if key == "max_results":
+        return f"<b>🔢 SET MAX RESULTS</b>\n\nCurrent: <code>{settings.get('max_results', MAX_BTN)}</code>\nAllowed: 1–20"
+    if key == "details":
+        return (
+            "<b>ℹ️ DETAILS</b>\n\n"
+            f"Shortener 1: <code>{settings.get('shortner')}</code>\n"
+            f"Shortener 2: <code>{settings.get('shortner_two')}</code>\n"
+            f"Shortener 3: <code>{settings.get('shortner_three')}</code>\n"
+            f"Verify gap: <code>{settings.get('verify_time')}</code>\n"
+            f"Third verify gap: <code>{settings.get('third_verify_time')}</code>\n"
+            f"Force channels: <code>{settings.get('fsub_channels', [settings.get('fsub_id', AUTH_CHANNEL)])}</code>\n"
+            f"Log channel: <code>{settings.get('log')}</code>\n"
+            f"Tutorial 1: {settings.get('tutorial')}\n"
+            f"Tutorial 2: {settings.get('tutorial_2')}\n"
+            f"Tutorial 3: {settings.get('tutorial_3')}\n"
+            f"IMDB template: <code>{settings.get('template')}</code>\n"
+            f"Caption: <code>{settings.get('caption')}</code>\n"
+            f"Max results: <code>{settings.get('max_results', MAX_BTN)}</code>\n"
+            f"Movie request: <code>{settings.get('request_channel', REQUEST_CHANNEL)}</code>"
+        )
+    return "<b>Settings</b>"
 
 
-async def show_short_detail(query, grp_id, slot):
-    settings = await get_settings(grp_id)
-    key_domain = {1: "shortner", 2: "shortner_two", 3: "shortner_three"}[slot]
-    key_api = {1: "api", 2: "api_two", 3: "api_three"}[slot]
-    domain, api = settings.get(key_domain), settings.get(key_api)
-    text = f"<b>ꜱʜᴏʀᴛᴇɴᴇʀ {slot} ꜱᴇᴛᴛɪɴɢꜱ:</b>"
-    if domain or api:
-        text += f"\n🌐 ᴅᴏᴍᴀɪɴ: <code>{domain or ''}</code>\n🔗 ᴀᴘɪ: <code>{api or ''}</code>"
-    buttons = [
-        [InlineKeyboardButton("sᴇᴛ", callback_data=f"adv_setshort#{slot}"), InlineKeyboardButton("ʀᴇᴍᴏᴠᴇ", callback_data=f"adv_remshort#{slot}")],
-        _back("adv_shortlinks"),
-    ]
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
+def _page_buttons(key, settings, grp_id):
+    b = []
+    if key in {"auto_filter", "file_secure", "spell_check", "auto_delete", "link", "file_mode"}:
+        if key == "link":
+            b.append([InlineKeyboardButton("Set button mode" if settings.get("link") else "Set links mode", callback_data=f"set_toggle#{key}#{grp_id}")])
+        else:
+            b.append([InlineKeyboardButton("Turn off" if settings.get(key) else "Turn on", callback_data=f"set_toggle#{key}#{grp_id}")])
+        if key == "auto_delete":
+            b.append([InlineKeyboardButton("Set time", callback_data=f"set_input#delete_time#{grp_id}")])
+        if key == "file_mode":
+            b = [[InlineKeyboardButton("Set verify mode" if not settings.get("is_verify") else "Set shortlink mode", callback_data=f"set_toggle#file_mode#{grp_id}")]]
+    elif key == "imdb":
+        b = [
+            [InlineKeyboardButton("Set template", callback_data=f"set_input#template#{grp_id}")],
+            [InlineKeyboardButton("Default template", callback_data=f"set_default#template#{grp_id}"), InlineKeyboardButton("Off poster", callback_data=f"set_toggle#imdb#{grp_id}")],
+        ]
+    elif key == "caption":
+        b = [[InlineKeyboardButton("Set caption", callback_data=f"set_input#caption#{grp_id}"), InlineKeyboardButton("Default caption", callback_data=f"set_default#caption#{grp_id}")]]
+    elif key == "tutorial":
+        b = [[InlineKeyboardButton("Set tutorial 1", callback_data=f"set_input#tutorial#{grp_id}"), InlineKeyboardButton("Set tutorial 2", callback_data=f"set_input#tutorial_2#{grp_id}")], [InlineKeyboardButton("Set tutorial 3", callback_data=f"set_input#tutorial_3#{grp_id}")]]
+    elif key == "shortlink":
+        b = [[InlineKeyboardButton("Set shortlink 1", callback_data=f"set_input#shortner#{grp_id}"), InlineKeyboardButton("Set shortlink 2", callback_data=f"set_input#shortner_two#{grp_id}")], [InlineKeyboardButton("Set shortlink 3", callback_data=f"set_input#shortner_three#{grp_id}")]]
+    elif key == "request_channel":
+        b = [[InlineKeyboardButton("Set channel", callback_data=f"set_input#request_channel#{grp_id}"), InlineKeyboardButton("Delete channel", callback_data=f"set_delete#request_channel#{grp_id}")]]
+    elif key == "fsub":
+        b = [[InlineKeyboardButton("Set channel", callback_data=f"set_input#fsub_add#{grp_id}"), InlineKeyboardButton("Delete channel", callback_data=f"set_input#fsub_delete#{grp_id}")]]
+    elif key == "max_results":
+        b = [[InlineKeyboardButton("Set max result", callback_data=f"set_input#max_results#{grp_id}"), InlineKeyboardButton("Default max result", callback_data=f"set_default#max_results#{grp_id}")]]
+    elif key == "details":
+        b = [[InlineKeyboardButton("Reset all", callback_data=f"set_reset#{grp_id}")]]
+    b.append(_back(grp_id))
+    return b
 
 
-async def show_gaps(query, grp_id):
-    settings = await get_settings(grp_id)
-    text = "<b>ᴄʜᴏᴏꜱᴇ ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ᴛɪᴍᴇ ᴛᴏ ᴍᴀɴᴀɢᴇ:</b>"
-    buttons = [
-        [InlineKeyboardButton(f"ᴛɪᴍᴇ 1 · {settings.get('verify_time')}", callback_data="adv_gap#1"), InlineKeyboardButton(f"ᴛɪᴍᴇ 2 · {settings.get('third_verify_time')}", callback_data="adv_gap#2")],
-        _back("adv_back_advanced"),
-    ]
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
+async def show_page(client, query, key, grp_id):
+    settings = await get_settings(int(grp_id))
+    await query.message.edit_text(_page_text(key, settings), reply_markup=InlineKeyboardMarkup(_page_buttons(key, settings, grp_id)), parse_mode=enums.ParseMode.HTML)
 
 
-async def show_tutorials(query, grp_id):
-    text = "<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʏᴏᴜʀ ᴛᴜᴛᴏʀɪᴀʟꜱ</b>\n\n<b>ꜱᴇʟᴇᴄᴛ ʏᴏᴜʀ 1ꜱᴛ, 2ɴᴅ ᴀɴᴅ 3ʀᴅ ᴛᴜᴛᴏʀɪᴀʟ...</b>"
-    buttons = [
-        [InlineKeyboardButton("1sᴛ ᴛᴜᴛᴏʀɪᴀʟ", callback_data="adv_tut#1"), InlineKeyboardButton("2ɴᴅ ᴛᴜᴛᴏʀɪᴀʟ", callback_data="adv_tut#2")],
-        [InlineKeyboardButton("3ʀᴅ ᴛᴜᴛᴏʀɪᴀʟ", callback_data="adv_tut#3")],
-        _back("adv_back_advanced"),
-    ]
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
+async def _authorize(client, query, grp_id):
+    try:
+        ok = await is_check_admin(client, int(grp_id), query.from_user.id)
+    except Exception:
+        ok = False
+    if not ok:
+        await query.answer("ᴏɴʟʏ ɢʀᴏᴜᴘ ᴏᴡɴᴇʀ/ᴀᴅᴍɪɴ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ᴛʜɪs", show_alert=True)
+        return False
+    return True
 
 
-async def show_tutorial_detail(query, grp_id, slot):
-    settings = await get_settings(grp_id)
-    key = {1: "tutorial", 2: "tutorial_2", 3: "tutorial_3"}[slot]
-    value = settings.get(key)
-    text = f"<b>📹 Tutorial {slot} Settings:</b>"
-    if value:
-        text += f"\n🔗 ᴠᴀʟᴜᴇ: <code>{value}</code>"
-    buttons = [
-        [InlineKeyboardButton("sᴇᴛ", callback_data=f"adv_settut#{slot}"), InlineKeyboardButton("ʀᴇᴍᴏᴠᴇ", callback_data=f"adv_remtut#{slot}")],
-        _back("adv_tutorials"),
-    ]
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
-
-
-@Client.on_callback_query(filters.regex(r"^advanced_settings$|^adv_"))
-async def advanced_callback(client, query):
+@Client.on_callback_query(filters.regex(r"^(set_|advanced_settings)"))
+async def settings_callback(client, query):
     data = query.data
-    grp_id = query.message.chat.id
-    if query.message.chat.type not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
-        return await query.answer("ᴜsᴇ ᴛʜɪꜱ ɪɴ ᴀ ɢʀᴏᴜᴘ", show_alert=True)
-    if not await is_check_admin(client, grp_id, query.from_user.id):
-        return await query.answer("ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀɴ ᴀᴅᴍɪɴ", show_alert=True)
+    await query.answer()
 
-    if data == "advanced_settings":
-        await query.answer()
-        return await show_advanced(query, grp_id)
-    if data == "adv_back_settings":
-        await query.answer()
-        return await show_main_settings(query, grp_id)
-    if data == "adv_back_advanced":
-        await query.answer()
-        return await show_advanced(query, grp_id)
-    if data == "adv_shortlinks":
-        await query.answer()
-        return await show_shortlinks(query, grp_id)
-    if data == "adv_gaps":
-        await query.answer()
-        return await show_gaps(query, grp_id)
-    if data == "adv_tutorials":
-        await query.answer()
-        return await show_tutorials(query, grp_id)
-    if data == "adv_toggle_verify":
-        settings = await get_settings(grp_id)
-        new_value = not bool(settings.get("is_verify"))
-        await save_group_settings(grp_id, "is_verify", new_value)
-        await query.answer("ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ᴏɴ ✅" if new_value else "ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ᴏꜰꜰ ❌")
-        return await show_advanced(query, grp_id)
-    if data == "adv_cancel":
-        PENDING.pop((grp_id, query.from_user.id), None)
-        await query.answer("ᴄᴀɴᴄᴇʟʟᴇᴅ")
-        return await show_advanced(query, grp_id)
-    if data.startswith("adv_short#"):
-        await query.answer()
-        return await show_short_detail(query, grp_id, int(data.split("#")[1]))
-    if data.startswith("adv_setshort#"):
-        slot = int(data.split("#")[1])
-        PENDING[(grp_id, query.from_user.id)] = {"type": "short", "slot": slot, "stage": "domain"}
-        await query.answer()
-        return await query.message.edit_text(
-            "<b>ꜱᴇɴᴅ ɴᴇᴡ ꜱʜᴏʀᴛɴᴇʀ ᴡᴇʙꜱɪᴛᴇ</b>\n\nᴜꜱᴇ the /cancel button below to cancel.",
-            reply_markup=InlineKeyboardMarkup([_cancel_button()]),
-            parse_mode=enums.ParseMode.HTML,
-        )
-    if data.startswith("adv_remshort#"):
-        slot = int(data.split("#")[1])
-        keys = {1: ("shortner", "api"), 2: ("shortner_two", "api_two"), 3: ("shortner_three", "api_three")}[slot]
-        await save_group_settings(grp_id, keys[0], "")
-        await save_group_settings(grp_id, keys[1], "")
-        await query.answer(f"sʜᴏʀᴛᴇɴᴇʀ {slot} ʀᴇᴍᴏᴠᴇᴅ")
-        return await show_short_detail(query, grp_id, slot)
-    if data.startswith("adv_gap#"):
-        slot = int(data.split("#")[1])
-        PENDING[(grp_id, query.from_user.id)] = {"type": "gap", "slot": slot, "stage": "value"}
-        await query.answer()
-        return await query.message.edit_text(
-            f"<b>ꜱᴇɴᴅ ᴛɪᴍᴇ {slot} ᴠᴀʟᴜᴇ ɪɴ ꜱᴇᴄᴏɴᴅꜱ</b>\n\nᴜꜱᴇ /cancel ᴛᴏ ᴄᴀɴᴄᴇʟ.",
-            reply_markup=InlineKeyboardMarkup([_cancel_button()]),
-            parse_mode=enums.ParseMode.HTML,
-        )
-    if data.startswith("adv_tut#"):
-        await query.answer()
-        return await show_tutorial_detail(query, grp_id, int(data.split("#")[1]))
-    if data.startswith("adv_settut#"):
-        slot = int(data.split("#")[1])
-        PENDING[(grp_id, query.from_user.id)] = {"type": "tutorial", "slot": slot, "stage": "value"}
-        await query.answer()
-        return await query.message.edit_text(
-            f"<b>📹 sᴇɴᴅ ᴛᴜᴛᴏʀɪᴀʟ {slot} ᴜʀʟ</b>\n\nᴜꜱᴇ /cancel ᴛᴏ ᴄᴀɴᴄᴇʟ.",
-            reply_markup=InlineKeyboardMarkup([_cancel_button()]),
-            parse_mode=enums.ParseMode.HTML,
-        )
-    if data.startswith("adv_remtut#"):
-        slot = int(data.split("#")[1])
-        key = {1: "tutorial", 2: "tutorial_2", 3: "tutorial_3"}[slot]
-        await save_group_settings(grp_id, key, "")
-        await query.answer(f"ᴛᴜᴛᴏʀɪᴀʟ {slot} ʀᴇᴍᴏᴠᴇᴅ")
-        return await show_tutorial_detail(query, grp_id, slot)
+    try:
+        if data.startswith("set_group#"):
+            gid = int(data.split("#", 1)[1])
+            if not await _authorize(client, query, gid):
+                return
+            return await show_group_settings(client, query, gid)
+
+        if data.startswith("set_groups#"):
+            gid = int(data.split("#", 1)[1])
+            if not await _authorize(client, query, gid):
+                return
+            return await show_group_list(client, query)
+
+        if data.startswith("advanced_settings"):
+            gid = int(data.split("#")[1]) if "#" in data else None
+            if gid is None:
+                return await show_group_list(client, query)
+            if not await _authorize(client, query, gid):
+                return
+            return await show_group_settings(client, query, gid)
+
+        parts = data.split("#")
+        action = parts[0]
+        if action in {"set_page", "set_toggle", "set_input", "set_default", "set_delete"}:
+            key = parts[1]
+            gid = int(parts[2])
+        elif action in {"set_back"}:
+            key = parts[1]
+            gid = int(parts[2])
+        else:
+            gid = int(parts[1]) if len(parts) > 1 else 0
+            key = ""
+
+        if not await _authorize(client, query, gid):
+            return
+
+        if action == "set_page":
+            return await show_page(client, query, key, gid)
+        if action == "set_back":
+            return await show_group_settings(client, query, gid)
+        if action == "set_close":
+            PENDING.pop((query.from_user.id, gid), None)
+            return await query.message.delete()
+        if action == "set_reset":
+            await save_default_settings(gid)
+            return await show_group_settings(client, query, gid)
+        if action == "set_toggle":
+            settings = await get_settings(gid)
+            if key == "file_mode":
+                value = not bool(settings.get("is_verify"))
+                await save_group_settings(gid, "is_verify", value)
+            else:
+                value = not bool(settings.get(key))
+                await save_group_settings(gid, key, value)
+            return await show_page(client, query, key, gid)
+        if action == "set_default":
+            defaults = db.default.copy()
+            if key == "max_results":
+                await save_group_settings(gid, key, int(MAX_BTN))
+            else:
+                await save_group_settings(gid, key, defaults.get(key, ""))
+            return await show_page(client, query, key, gid)
+        if action == "set_delete":
+            if key == "request_channel":
+                await save_group_settings(gid, key, int(REQUEST_CHANNEL))
+            return await show_page(client, query, key, gid)
+        if action == "set_input":
+            state = {"type": key}
+            PENDING[(query.from_user.id, gid)] = state
+            prompt = {
+                "delete_time": "Send delete time in seconds.",
+                "template": "Send your IMDB template. Supported: {search}, {mention}, {group}",
+                "caption": "Send your file caption. Supported: {file_name}",
+                "max_results": "Send max results from 1 to 20.",
+                "request_channel": "Send request channel ID.",
+                "fsub_add": "Send force-subscribe channel ID.",
+                "fsub_delete": "Send the force-subscribe channel ID to delete.",
+                "shortner": "Send shortener 1 URL/domain.",
+                "shortner_two": "Send shortener 2 URL/domain.",
+                "shortner_three": "Send shortener 3 URL/domain.",
+                "api": "Send shortener 1 API.",
+                "api_two": "Send shortener 2 API.",
+                "api_three": "Send shortener 3 API.",
+                "tutorial": "Send tutorial 1 URL.",
+                "tutorial_2": "Send tutorial 2 URL.",
+                "tutorial_3": "Send tutorial 3 URL.",
+            }.get(key, "Send the new value.")
+            return await query.message.edit_text(f"<b>{prompt}</b>\n\nSend /cancel to cancel.", reply_markup=InlineKeyboardMarkup([_cancel_button(gid)]), parse_mode=enums.ParseMode.HTML)
+        if action == "set_cancel":
+            gid = int(parts[1])
+            PENDING.pop((query.from_user.id, gid), None)
+            return await show_group_settings(client, query, gid)
+    except Exception as exc:
+        try:
+            await query.answer("Something went wrong", show_alert=True)
+        except Exception:
+            pass
+        print(f"settings callback error: {exc}")
 
 
-@Client.on_message(filters.command("cancel") & filters.group)
+@Client.on_message(filters.command("cancel"))
 async def advanced_cancel(client, message):
-    key = (message.chat.id, message.from_user.id)
-    if key not in PENDING:
-        return raise_continue()
-    PENDING.pop(key, None)
-    await message.reply_text("<b>ᴘʀᴏᴄᴇꜱꜱ ᴄᴀɴᴄᴇʟʟᴇᴅ ✅</b>")
-
-
-def raise_continue():
-    raise ContinuePropagation
-
-
-@Client.on_message(filters.text & filters.group)
-async def advanced_input(client, message):
-    key = (message.chat.id, message.from_user.id)
-    state = PENDING.get(key)
-    if not state:
+    key_candidates = [(message.from_user.id, gid) for (uid, gid) in list(PENDING) if uid == message.from_user.id]
+    if not key_candidates:
         raise ContinuePropagation
-    if not await is_check_admin(client, message.chat.id, message.from_user.id):
+    for key in key_candidates:
         PENDING.pop(key, None)
+    await message.reply_text("<b>ᴄᴀɴᴄᴇʟʟᴇᴅ ✅</b>")
+
+
+@Client.on_message(filters.text)
+async def advanced_input(client, message):
+    uid = message.from_user.id if message.from_user else None
+    if not uid:
+        raise ContinuePropagation
+    candidates = [(k, v) for k, v in PENDING.items() if k[0] == uid]
+    if not candidates:
+        raise ContinuePropagation
+    (user_id, gid), state = candidates[-1]
+    if message.text.startswith("/"):
+        raise ContinuePropagation
+    if not await is_check_admin(client, gid, uid):
+        PENDING.pop((user_id, gid), None)
         raise ContinuePropagation
     value = message.text.strip()
     if not value:
         return await message.reply_text("ᴠᴀʟᴜᴇ ᴄᴀɴɴᴏᴛ ʙᴇ ᴇᴍᴘᴛʏ")
 
-    if state["type"] == "short" and state["stage"] == "domain":
-        state["domain"] = value.replace("https://", "").replace("http://", "").rstrip("/")
-        state["stage"] = "api"
-        return await message.reply_text(
-            "<b>ɴᴏᴡ ꜱᴇɴᴅ ꜱʜᴏʀᴛɴᴇʀ ᴀᴘɪ</b>\n\nᴜꜱᴇ /cancel ᴛᴏ ᴄᴀɴᴄᴇʟ.",
-            reply_markup=InlineKeyboardMarkup([_cancel_button()]),
-            parse_mode=enums.ParseMode.HTML,
-        )
-
-    if state["type"] == "short" and state["stage"] == "api":
-        api = value
-        domain = state["domain"]
-        slot = state["slot"]
+    key = state["type"]
+    if key == "delete_time":
         try:
-            resp = requests.get(f"https://{domain}/api?api={api}&url=https://t.me/", timeout=10).json()
-            if resp.get("status") != "success":
-                return await message.reply_text("❌ ɪɴᴠᴀʟɪᴅ ꜱʜᴏʀᴛᴇɴᴇʀ ᴏʀ ᴀᴘɪ. ᴛʀʏ ᴀɢᴀɪɴ ᴏʀ /cancel")
-        except Exception as exc:
-            return await message.reply_text(f"❌ ᴄᴏᴜʟᴅ ɴᴏᴛ ᴠᴇʀɪꜰʏ ꜱʜᴏʀᴛᴇɴᴇʀ: <code>{exc}</code>")
-        keys = {1: ("shortner", "api"), 2: ("shortner_two", "api_two"), 3: ("shortner_three", "api_three")} [slot]
-        await save_group_settings(message.chat.id, keys[0], domain)
-        await save_group_settings(message.chat.id, keys[1], api)
-        PENDING.pop(key, None)
-        return await message.reply_text(
-            f"<b>ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ ᴜᴘᴅᴀᴛᴇᴅ ꜱʜᴏʀᴛᴇɴᴇʀ {slot} ᴠᴀʟᴜᴇꜱ ✅</b>\nᴡᴇʙꜱɪᴛᴇ: <code>{domain}</code>\nᴀᴘɪ: <code>{api}</code>",
-            reply_markup=InlineKeyboardMarkup([_back("adv_shortlinks")]),
-            parse_mode=enums.ParseMode.HTML,
-        )
-
-    if state["type"] == "gap":
-        try:
-            seconds = int(value)
-            if seconds < 0:
+            value_int = int(value)
+            if value_int < 1:
                 raise ValueError
         except ValueError:
-            return await message.reply_text("❌ ꜱᴇɴᴅ ᴀ ᴠᴀʟɪᴅ ɴᴜᴍʙᴇʀ ᴏꜰ ꜱᴇᴄᴏɴᴅꜱ ᴏʀ /cancel")
-        slot = state["slot"]
-        key_name = "verify_time" if slot == 1 else "third_verify_time"
-        await save_group_settings(message.chat.id, key_name, seconds)
-        PENDING.pop(key, None)
-        return await message.reply_text(
-            f"<b>ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ᴛɪᴍᴇ {slot} ᴜᴘᴅᴀᴛᴇᴅ ✅</b>\nᴛɪᴍᴇ: <code>{seconds}</code>",
-            reply_markup=InlineKeyboardMarkup([_back("adv_gaps")]),
-            parse_mode=enums.ParseMode.HTML,
-        )
-
-    if state["type"] == "tutorial":
+            return await message.reply_text("Send a valid positive number of seconds or /cancel")
+        await save_group_settings(gid, "delete_time", value_int)
+        PENDING.pop((uid, gid), None)
+    elif key == "max_results":
+        try:
+            value_int = int(value)
+            if not 1 <= value_int <= 20:
+                raise ValueError
+        except ValueError:
+            return await message.reply_text("Max results must be between 1 and 20.")
+        await save_group_settings(gid, "max_results", value_int)
+        PENDING.pop((uid, gid), None)
+    elif key == "template":
+        if any(x not in value for x in ("{search}", "{mention}", "{group}")):
+            return await message.reply_text("Template must support {search}, {mention}, and {group}, or use /cancel.")
+        await save_group_settings(gid, "template", value)
+        PENDING.pop((uid, gid), None)
+    elif key == "caption":
+        if "{file_name}" not in value:
+            return await message.reply_text("Caption must contain {file_name}, or use /cancel.")
+        await save_group_settings(gid, "caption", value)
+        PENDING.pop((uid, gid), None)
+    elif key.startswith("tutorial"):
         if not (value.startswith("http://") or value.startswith("https://")):
-            return await message.reply_text("❌ ꜱᴇɴᴅ ᴀ ᴠᴀʟɪᴅ ʜᴛᴛᴘ/ʜᴛᴛᴘs ᴜʀʟ ᴏʀ /cancel")
-        slot = state["slot"]
-        key_name = {1: "tutorial", 2: "tutorial_2", 3: "tutorial_3"}[slot]
-        await save_group_settings(message.chat.id, key_name, value)
-        PENDING.pop(key, None)
-        return await message.reply_text(
-            f"<b>ᴛᴜᴛᴏʀɪᴀʟ {slot} ᴜᴘᴅᴀᴛᴇᴅ ✅</b>\nᴠᴀʟᴜᴇ: <code>{value}</code>",
-            reply_markup=InlineKeyboardMarkup([_back("adv_tutorials")]),
-            parse_mode=enums.ParseMode.HTML,
-        )
+            return await message.reply_text("Send a valid http/https URL or /cancel")
+        await save_group_settings(gid, key, value)
+        PENDING.pop((uid, gid), None)
+    elif key in {"shortner", "shortner_two", "shortner_three"}:
+        domain = value.replace("https://", "").replace("http://", "").rstrip("/")
+        api_key = {"shortner": "api", "shortner_two": "api_two", "shortner_three": "api_three"}[key]
+        await save_group_settings(gid, key, domain)
+        state["type"] = api_key
+        PENDING[(uid, gid)] = state
+        return await message.reply_text("<b>ɴᴏᴡ sᴇɴᴅ ᴛʜᴇ sʜᴏʀᴛᴇɴᴇʀ ᴀᴘɪ</b>\n\nSend /cancel to cancel.")
+    elif key in {"api", "api_two", "api_three"}:
+        settings = await get_settings(gid)
+        domain_key = {"api": "shortner", "api_two": "shortner_two", "api_three": "shortner_three"}[key]
+        domain = settings.get(domain_key)
+        if not domain:
+            PENDING.pop((uid, gid), None)
+            return await message.reply_text("❌ ᴘʟᴇᴀsᴇ sᴇᴛ ᴛʜᴇ sʜᴏʀᴛᴇɴᴇʀ ᴅᴏᴍᴀɪɴ ғɪʀsᴛ.")
+        try:
+            resp = requests.get(f"https://{domain}/api?api={value}&url=https://t.me/", timeout=10).json()
+            if resp.get("status") not in {"success", True}:
+                return await message.reply_text("❌ ɪɴᴠᴀʟɪᴅ sʜᴏʀᴛᴇɴᴇʀ ᴏʀ ᴀᴘɪ. ᴛʀʏ ᴀɢᴀɪɴ ᴏʀ /cancel")
+        except Exception as exc:
+            return await message.reply_text(f"❌ ᴄᴏᴜʟᴅ ɴᴏᴛ ᴠᴇʀɪғʏ sʜᴏʀᴛᴇɴᴇʀ: <code>{exc}</code>")
+        await save_group_settings(gid, key, value)
+        PENDING.pop((uid, gid), None)
+    elif key == "request_channel":
+        try:
+            value_int = int(value)
+        except ValueError:
+            return await message.reply_text("Send a valid channel ID or /cancel")
+        await save_group_settings(gid, key, value_int)
+        PENDING.pop((uid, gid), None)
+    elif key == "fsub_add":
+        try:
+            value_int = int(value)
+        except ValueError:
+            return await message.reply_text("Send a valid channel ID or /cancel")
+        settings = await get_settings(gid)
+        channels = list(settings.get("fsub_channels") or [])
+        if value_int not in channels:
+            channels.append(value_int)
+        await save_group_settings(gid, "fsub_channels", channels)
+        PENDING.pop((uid, gid), None)
+    elif key == "fsub_delete":
+        try:
+            value_int = int(value)
+        except ValueError:
+            return await message.reply_text("Send a valid channel ID or /cancel")
+        settings = await get_settings(gid)
+        channels = [int(c) for c in (settings.get("fsub_channels") or []) if int(c) != value_int]
+        if not channels:
+            channels = [AUTH_CHANNEL]
+        await save_group_settings(gid, "fsub_channels", channels)
+        PENDING.pop((uid, gid), None)
+    else:
+        await save_group_settings(gid, key, value)
+        PENDING.pop((uid, gid), None)
+
+    await message.reply_text("<b>ᴜᴘᴅᴀᴛᴇᴅ ✅</b>")
