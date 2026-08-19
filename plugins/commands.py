@@ -53,6 +53,13 @@ async def start(client: Client, message):
     await message.react(emoji=random.choice(REACTIONS))
     m = message
     user_id = m.from_user.id
+    if message.chat.type == enums.ChatType.PRIVATE and len(m.command) == 2 and m.command[1].startswith("settings_"):
+        from plugins.advanced_settings import show_group_list, show_group_settings
+        try:
+            grp_id = int(m.command[1].split("_", 1)[1])
+        except (TypeError, ValueError):
+            return await show_group_list(client, message)
+        return await show_group_settings(client, message, grp_id)
     if len(m.command) == 2 and m.command[1].startswith("notcopy"):
         _, userid, verify_id, file_id = m.command[1].split("_", 3)
         user_id = int(userid)
@@ -298,8 +305,16 @@ async def start(client: Client, message):
         pre, grp_id, file_id = "", 0, data
 
     settings = await get_settings(int(data.split("_", 2)[1]))
-    if settings.get("fsub_id", AUTH_CHANNEL) == AUTH_REQ_CHANNEL:
-        if AUTH_REQ_CHANNEL and not await is_req_subscribed(client, message):
+    # Preserve the legacy fsub_id field while allowing the settings UI to manage
+    # multiple force-subscribe channels independently for each group.
+    fsub_channels = settings.get("fsub_channels") or [settings.get("fsub_id", AUTH_CHANNEL)]
+    try:
+        fsub_channels = [int(c) for c in fsub_channels]
+    except (TypeError, ValueError):
+        fsub_channels = [int(AUTH_CHANNEL)]
+
+    if AUTH_REQ_CHANNEL and int(AUTH_REQ_CHANNEL) in fsub_channels:
+        if not await is_req_subscribed(client, message):
             try:
                 invite_link = await client.create_chat_invite_link(
                     int(AUTH_REQ_CHANNEL), creates_join_request=True
@@ -307,71 +322,46 @@ async def start(client: Client, message):
             except ChatAdminRequired:
                 logger.error("Make sure Bot is admin in Forcesub channel")
                 return
-            btn = [
-                [InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link.invite_link)]
-            ]
+            btn = [[InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link.invite_link)]]
             if message.command[1] != "subscribe":
-                btn.append(
-                    [
-                        InlineKeyboardButton(
-                            "♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️",
-                            url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}",
-                        )
-                    ]
-                )
+                btn.append([[InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}")]][0])
             await client.send_photo(
-                chat_id=message.from_user.id,
-                photo=FORCESUB_IMG,
-                caption=script.FORCESUB_TEXT,
-                reply_markup=InlineKeyboardMarkup(btn),
-                parse_mode=enums.ParseMode.HTML,
+                chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=script.FORCESUB_TEXT,
+                reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML,
             )
             return
     else:
-        id = settings.get("fsub_id", AUTH_CHANNEL)
-        channel = int(id)
         btn = []
-        if channel != AUTH_CHANNEL and not await is_subscribed(
-            client, message.from_user.id, channel
-        ):
-            invite_link_custom = await client.create_chat_invite_link(channel)
-            btn.append(
-                [
-                    InlineKeyboardButton(
-                        "⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link_custom.invite_link
-                    )
-                ]
-            )
-        if not await is_req_subscribed(client, message):
-            invite_link_default = await client.create_chat_invite_link(
-                int(AUTH_CHANNEL), creates_join_request=True
-            )
-            btn.append(
-                [
-                    InlineKeyboardButton(
-                        "⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link_default.invite_link
-                    )
-                ]
-            )
-        if message.command[1] != "subscribe" and (
-            await is_req_subscribed(client, message) is False
-            or await is_subscribed(client, message.from_user.id, channel) is False
-        ):
-            btn.append(
-                [
-                    InlineKeyboardButton(
-                        "♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️",
-                        url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}",
-                    )
-                ]
-            )
+        missing_custom = False
+        for channel in fsub_channels:
+            if channel == int(AUTH_CHANNEL):
+                continue
+            try:
+                subscribed = await is_subscribed(client, message.from_user.id, channel)
+            except Exception:
+                subscribed = False
+            if not subscribed:
+                missing_custom = True
+                try:
+                    invite = await client.create_chat_invite_link(channel)
+                    btn.append([InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite.invite_link)])
+                except Exception:
+                    pass
+
+        default_missing = not await is_req_subscribed(client, message)
+        if default_missing:
+            try:
+                invite_link_default = await client.create_chat_invite_link(int(AUTH_CHANNEL), creates_join_request=True)
+                btn.append([InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link_default.invite_link)])
+            except Exception:
+                pass
+
+        if message.command[1] != "subscribe" and (missing_custom or default_missing):
+            btn.append([InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}")])
         if btn:
             await client.send_photo(
-                chat_id=message.from_user.id,
-                photo=FORCESUB_IMG,
-                caption=script.FORCESUB_TEXT,
-                reply_markup=InlineKeyboardMarkup(btn),
-                parse_mode=enums.ParseMode.HTML,
+                chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=script.FORCESUB_TEXT,
+                reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML,
             )
             return
 
@@ -481,6 +471,7 @@ async def start(client: Client, message):
                 chat_id=message.from_user.id,
                 file_id=file.file_id,
                 caption=f_caption,
+                protect_content=bool(settings.get("file_secure", PROTECT_CONTENT)),
                 reply_markup=InlineKeyboardMarkup(btn),
             )
             files_to_delete.append(toDel)
@@ -539,6 +530,7 @@ async def start(client: Client, message):
         chat_id=message.from_user.id,
         file_id=file_id,
         caption=f_caption,
+        protect_content=bool(settings.get("file_secure", PROTECT_CONTENT)),
         reply_markup=InlineKeyboardMarkup(btn),
     )
     delCap = "<i>ʏᴏᴜʀ ꜰɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</i>".format(
@@ -636,82 +628,28 @@ async def delete_all_index(bot, message):
 async def settings(client, message):
     user_id = message.from_user.id if message.from_user else None
     if not user_id:
-        return await message.reply(
-            "<b>💔 ʏᴏᴜ ᴀʀᴇ ᴀɴᴏɴʏᴍᴏᴜꜱ ᴀᴅᴍɪɴ ʏᴏᴜ ᴄᴀɴ'ᴛ ᴜꜱᴇ ᴛʜɪꜱ ᴄᴏᴍᴍᴀɴᴅ...</b>"
-        )
-    chat_type = message.chat.type
-    if chat_type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        return await message.reply_text("<code>ᴜꜱᴇ ᴛʜɪꜱ ᴄᴏᴍᴍᴀɴᴅ ɪɴ ɢʀᴏᴜᴘ.</code>")
+        return await message.reply("<b>💔 ʏᴏᴜ ᴀʀᴇ ᴀɴᴏɴʏᴍᴏᴜs ᴀᴅᴍɪɴ ʏᴏᴜ ᴄᴀɴ'ᴛ ᴜsᴇ ᴛʜɪs ᴄᴏᴍᴍᴀɴᴅ...</b>")
+
+    if message.chat.type == enums.ChatType.PRIVATE:
+        from plugins.advanced_settings import show_group_list
+        return await show_group_list(client, message)
+
+    if message.chat.type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+        return await message.reply_text("<code>ᴜsᴇ ᴛʜɪs ᴄᴏᴍᴍᴀɴᴅ ɪɴ ɢʀᴏᴜᴘ ᴏʀ ᴘʀɪᴠᴀᴛᴇ.</code>")
+
     grp_id = message.chat.id
-    if not await is_check_admin(client, grp_id, message.from_user.id):
-        return await message.reply_text("<b>ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴅᴍɪɴ ɪɴ ᴛʜɪꜱ ɢʀᴏᴜᴘ</b>")
-    settings = await get_settings(grp_id)
-    title = message.chat.title
-    if settings is not None:
-        buttons = [
-            [
-                InlineKeyboardButton(
-                    "ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ",
-                    callback_data=f'setgs#auto_filter#{settings["auto_filter"]}#{grp_id}',
-                ),
-                InlineKeyboardButton(
-                    "ᴏɴ ✓" if settings["auto_filter"] else "ᴏғғ ✗",
-                    callback_data=f'setgs#auto_filter#{settings["auto_filter"]}#{grp_id}',
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "ɪᴍᴅʙ", callback_data=f'setgs#imdb#{settings["imdb"]}#{grp_id}'
-                ),
-                InlineKeyboardButton(
-                    "ᴏɴ ✓" if settings["imdb"] else "ᴏғғ ✗",
-                    callback_data=f'setgs#imdb#{settings["imdb"]}#{grp_id}',
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "sᴘᴇʟʟ ᴄʜᴇᴄᴋ",
-                    callback_data=f'setgs#spell_check#{settings["spell_check"]}#{grp_id}',
-                ),
-                InlineKeyboardButton(
-                    "ᴏɴ ✓" if settings["spell_check"] else "ᴏғғ ✗",
-                    callback_data=f'setgs#spell_check#{settings["spell_check"]}#{grp_id}',
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ",
-                    callback_data=f'setgs#auto_delete#{settings["auto_delete"]}#{grp_id}',
-                ),
-                InlineKeyboardButton(
-                    (
-                        f"{get_readable_time(DELETE_TIME)}"
-                        if settings["auto_delete"]
-                        else "ᴏғғ ✗"
-                    ),
-                    callback_data=f'setgs#auto_delete#{settings["auto_delete"]}#{grp_id}',
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "ʀᴇsᴜʟᴛ ᴍᴏᴅᴇ",
-                    callback_data=f'setgs#link#{settings["link"]}#{str(grp_id)}',
-                ),
-                InlineKeyboardButton(
-                    "⛓ ʟɪɴᴋ" if settings["link"] else "🧲 ʙᴜᴛᴛᴏɴ",
-                    callback_data=f'setgs#link#{settings["link"]}#{str(grp_id)}',
-                ),
-            ],
-            [InlineKeyboardButton("🔗 sʜᴏʀᴛʟɪɴᴋ", callback_data="advanced_settings")],
-            [InlineKeyboardButton("❌ ᴄʟᴏsᴇ ❌", callback_data="close_data")],
-        ]
-        await message.reply_text(
-            text=f"ᴄʜᴀɴɢᴇ ʏᴏᴜʀ sᴇᴛᴛɪɴɢs ꜰᴏʀ <b>'{title}'</b> ᴀs ʏᴏᴜʀ ᴡɪsʜ ✨",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode=enums.ParseMode.HTML,
-        )
-    else:
-        await message.reply_text("<b>ꜱᴏᴍᴇᴛʜɪɴɢ ᴡᴇɴᴛ ᴡʀᴏɴɢ</b>")
+    if not await is_check_admin(client, grp_id, user_id):
+        return await message.reply_text("<b>ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀᴅᴍɪɴ ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ</b>")
+
+    try:
+        pm_url = f"https://t.me/{temp.U_NAME}?start=settings_{grp_id}"
+    except Exception:
+        pm_url = f"https://t.me/{client.me.username}?start=settings_{grp_id}"
+    buttons = [[InlineKeyboardButton("⚠️ GO TO PRIVATE ⚠️", url=pm_url)]]
+    return await message.reply_text(
+        "⚠️ ᴘʟᴇᴀsᴇ ᴏᴘᴇɴ sᴇᴛᴛɪɴɢs ᴍᴇɴᴜ ɪɴ ᴘʀɪᴠᴀᴛᴇ!!",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
 
 
 @Client.on_message(filters.command("set_template"))
@@ -785,8 +723,10 @@ async def send_request(bot, message):
             )
         ],
     ]
+    req_settings = await get_settings(message.chat.id) if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP] else {}
+    request_target = req_settings.get("request_channel", REQUEST_CHANNEL)
     sent_request = await bot.send_message(
-        REQUEST_CHANNEL,
+        request_target,
         script.REQUEST_TXT.format(
             message.from_user.mention, message.from_user.id, request
         ),
