@@ -124,7 +124,15 @@ def _page_text(key, settings):
     if key == "tutorial":
         return f"<b>🎬 TUTORIAL LINK</b>\n\n1: {settings.get('tutorial') or TUTORIAL}\n2: {settings.get('tutorial_2') or TUTORIAL_2}\n3: {settings.get('tutorial_3') or TUTORIAL_3}"
     if key == "shortlink":
-        return f"<b>🖇️ SET SHORTLINK</b>\n\n1: {settings.get('shortner')}\n2: {settings.get('shortner_two')}\n3: {settings.get('shortner_three')}"
+        return (
+            f"<b>🖇️ SET SHORTLINK</b>\n\n"
+            f"Verification: {'ON ✅' if settings.get('is_verify') else 'OFF ❌'}\n"
+            f"1: {settings.get('shortner')}\n"
+            f"2: {settings.get('shortner_two')}\n"
+            f"3: {settings.get('shortner_three')}\n\n"
+            f"1st verify gap: <code>{get_readable_time(settings.get('verify_time', TWO_VERIFY_GAP))}</code>\n"
+            f"3rd verify gap: <code>{get_readable_time(settings.get('third_verify_time', THREE_VERIFY_GAP))}</code>"
+        )
     if key == "request_channel":
         return f"<b>📢 SET MOVIE REQ</b>\n\nCurrent request channel: <code>{settings.get('request_channel', REQUEST_CHANNEL)}</code>"
     if key == "fsub":
@@ -174,7 +182,21 @@ def _page_buttons(key, settings, grp_id):
     elif key == "tutorial":
         b = [[InlineKeyboardButton("Set tutorial 1", callback_data=f"set_input#tutorial#{grp_id}"), InlineKeyboardButton("Set tutorial 2", callback_data=f"set_input#tutorial_2#{grp_id}")], [InlineKeyboardButton("Set tutorial 3", callback_data=f"set_input#tutorial_3#{grp_id}")]]
     elif key == "shortlink":
-        b = [[InlineKeyboardButton("Set shortlink 1", callback_data=f"set_input#shortner#{grp_id}"), InlineKeyboardButton("Set shortlink 2", callback_data=f"set_input#shortner_two#{grp_id}")], [InlineKeyboardButton("Set shortlink 3", callback_data=f"set_input#shortner_three#{grp_id}")]]
+        b = [
+            [InlineKeyboardButton(
+                "Turn verification OFF ❌" if settings.get("is_verify") else "Turn verification ON ✅",
+                callback_data=f"set_toggle#file_mode#{grp_id}",
+            )],
+            [
+                InlineKeyboardButton("Set shortlink 1", callback_data=f"set_input#shortner#{grp_id}"),
+                InlineKeyboardButton("Set shortlink 2", callback_data=f"set_input#shortner_two#{grp_id}"),
+            ],
+            [InlineKeyboardButton("Set shortlink 3", callback_data=f"set_input#shortner_three#{grp_id}")],
+            [
+                InlineKeyboardButton("Set 1st verify gap", callback_data=f"set_input#verify_time#{grp_id}"),
+                InlineKeyboardButton("Set 3rd verify gap", callback_data=f"set_input#third_verify_time#{grp_id}"),
+            ],
+        ]
     elif key == "request_channel":
         b = [[InlineKeyboardButton("Set channel", callback_data=f"set_input#request_channel#{grp_id}"), InlineKeyboardButton("Delete channel", callback_data=f"set_delete#request_channel#{grp_id}")]]
     elif key == "fsub":
@@ -291,6 +313,8 @@ async def settings_callback(client, query):
                 "api": "Send shortener 1 API.",
                 "api_two": "Send shortener 2 API.",
                 "api_three": "Send shortener 3 API.",
+                "verify_time": "Send the 1st verification gap in seconds.",
+                "third_verify_time": "Send the 3rd verification gap in seconds.",
                 "tutorial": "Send tutorial 1 URL.",
                 "tutorial_2": "Send tutorial 2 URL.",
                 "tutorial_3": "Send tutorial 3 URL.",
@@ -391,6 +415,15 @@ async def advanced_input(client, message):
         except Exception as exc:
             return await message.reply_text(f"❌ ᴄᴏᴜʟᴅ ɴᴏᴛ ᴠᴇʀɪғʏ sʜᴏʀᴛᴇɴᴇʀ: <code>{exc}</code>")
         await save_group_settings(gid, key, value)
+        PENDING.pop((uid, gid), None)
+    elif key in {"verify_time", "third_verify_time"}:
+        try:
+            value_int = int(value)
+            if value_int < 1:
+                raise ValueError
+        except ValueError:
+            return await message.reply_text("Send a valid positive number of seconds or /cancel")
+        await save_group_settings(gid, key, value_int)
         PENDING.pop((uid, gid), None)
     elif key == "request_channel":
         try:
