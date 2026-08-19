@@ -43,6 +43,7 @@ class Database:
         "fsub_id": AUTH_CHANNEL,
         "link": LINK_MODE,
         "is_verify": IS_VERIFY,
+        "file_mode": False,
         "verify_time": TWO_VERIFY_GAP,
         "shortner_three": SHORTENER_WEBSITE3,
         "api_three": SHORTENER_API3,
