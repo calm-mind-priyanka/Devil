@@ -47,6 +47,20 @@ BUTTONS = {}
 FILES_ID = {}
 CAP = {}
 
+async def _group_id_for_query(query):
+    if query.message.chat.type == enums.ChatType.PRIVATE:
+        return temp.CHAT.get(query.from_user.id, query.message.chat.id)
+    return query.message.chat.id
+
+
+async def _max_results_for_query(query):
+    gid = await _group_id_for_query(query)
+    settings = await get_settings(gid)
+    try:
+        return max(1, min(20, int(settings.get("max_results", MAX_BTN))))
+    except (TypeError, ValueError):
+        return int(MAX_BTN)
+
 from database.jsreferdb import referdb
 from database.config_db import mdb
 import logging
@@ -326,12 +340,12 @@ async def next_page(bot, query):
         ],
     )
 
-    if 0 < offset <= int(MAX_BTN):
+    if 0 < offset <= await _max_results_for_query(query):
         off_set = 0
     elif offset == 0:
         off_set = None
     else:
-        off_set = offset - int(MAX_BTN)
+        off_set = offset - await _max_results_for_query(query)
     if n_offset == 0:
 
         btn.append(
@@ -340,7 +354,7 @@ async def next_page(bot, query):
                     "⋞ ʙᴀᴄᴋ", callback_data=f"next_{req}_{key}_{off_set}"
                 ),
                 InlineKeyboardButton(
-                    f"ᴘᴀɢᴇ {math.ceil(int(offset) / int(MAX_BTN)) + 1} / {math.ceil(total / int(MAX_BTN))}",
+                    f"ᴘᴀɢᴇ {math.ceil(int(offset) / await _max_results_for_query(query)) + 1} / {math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
             ]
@@ -349,7 +363,7 @@ async def next_page(bot, query):
         btn.append(
             [
                 InlineKeyboardButton(
-                    f"{math.ceil(int(offset) / int(MAX_BTN)) + 1} / {math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(int(offset) / await _max_results_for_query(query)) + 1} / {math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
                 InlineKeyboardButton(
@@ -364,7 +378,7 @@ async def next_page(bot, query):
                     "⋞ ʙᴀᴄᴋ", callback_data=f"next_{req}_{key}_{off_set}"
                 ),
                 InlineKeyboardButton(
-                    f"{math.ceil(int(offset) / int(MAX_BTN)) + 1} / {math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(int(offset) / await _max_results_for_query(query)) + 1} / {math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
                 InlineKeyboardButton(
@@ -445,10 +459,10 @@ async def season_search(client: Client, query: CallbackQuery):
         return
     search = search.replace("_", " ")
     files, n_offset, total = await get_search_results(
-        f"{search} {seas}", max_results=int(MAX_BTN), offset=offset
+        f"{search} {seas}", max_results=await _max_results_for_query(query), offset=offset
     )
     files2, n_offset2, total2 = await get_search_results(
-        f"{search} {season}", max_results=int(MAX_BTN), offset=offset
+        f"{search} {season}", max_results=await _max_results_for_query(query), offset=offset
     )
     total += total2
     try:
@@ -532,10 +546,10 @@ async def season_search(client: Client, query: CallbackQuery):
             [
                 InlineKeyboardButton(
                     "⋞ ʙᴀᴄᴋ",
-                    callback_data=f"season_search#{season}#{key}#{offset- int(MAX_BTN)}#{orginal_offset}#{req}",
+                    callback_data=f"season_search#{season}#{key}#{offset- await _max_results_for_query(query)}#{orginal_offset}#{req}",
                 ),
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
             ]
@@ -544,7 +558,7 @@ async def season_search(client: Client, query: CallbackQuery):
         btn.append(
             [
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
                 InlineKeyboardButton(
@@ -558,10 +572,10 @@ async def season_search(client: Client, query: CallbackQuery):
             [
                 InlineKeyboardButton(
                     "⋞ ʙᴀᴄᴋ",
-                    callback_data=f"season_search#{season}#{key}#{offset- int(MAX_BTN)}#{orginal_offset}#{req}",
+                    callback_data=f"season_search#{season}#{key}#{offset- await _max_results_for_query(query)}#{orginal_offset}#{req}",
                 ),
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
                 InlineKeyboardButton(
@@ -637,7 +651,7 @@ async def year_search(client: Client, query: CallbackQuery):
         return
     search = search.replace("_", " ")
     files, n_offset, total = await get_search_results(
-        f"{search} {year}", max_results=int(MAX_BTN), offset=offset
+        f"{search} {year}", max_results=await _max_results_for_query(query), offset=offset
     )
     try:
         n_offset = int(n_offset)
@@ -712,10 +726,10 @@ async def year_search(client: Client, query: CallbackQuery):
             [
                 InlineKeyboardButton(
                     "⋞ ʙᴀᴄᴋ",
-                    callback_data=f"years_search#{year}#{key}#{offset- int(MAX_BTN)}#{orginal_offset}#{req}",
+                    callback_data=f"years_search#{year}#{key}#{offset- await _max_results_for_query(query)}#{orginal_offset}#{req}",
                 ),
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
             ]
@@ -724,7 +738,7 @@ async def year_search(client: Client, query: CallbackQuery):
         btn.append(
             [
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
                 InlineKeyboardButton(
@@ -738,10 +752,10 @@ async def year_search(client: Client, query: CallbackQuery):
             [
                 InlineKeyboardButton(
                     "⋞ ʙᴀᴄᴋ",
-                    callback_data=f"years_search#{year}#{key}#{offset- int(MAX_BTN)}#{orginal_offset}#{req}",
+                    callback_data=f"years_search#{year}#{key}#{offset- await _max_results_for_query(query)}#{orginal_offset}#{req}",
                 ),
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
                 InlineKeyboardButton(
@@ -816,7 +830,7 @@ async def quality_search(client: Client, query: CallbackQuery):
         return
     search = search.replace("_", " ")
     files, n_offset, total = await get_search_results(
-        f"{search} {qul}", max_results=int(MAX_BTN), offset=offset
+        f"{search} {qul}", max_results=await _max_results_for_query(query), offset=offset
     )
     try:
         n_offset = int(n_offset)
@@ -890,10 +904,10 @@ async def quality_search(client: Client, query: CallbackQuery):
             [
                 InlineKeyboardButton(
                     "⋞ ʙᴀᴄᴋ",
-                    callback_data=f"quality_search#{qul}#{key}#{offset- int(MAX_BTN)}#{orginal_offset}#{req}",
+                    callback_data=f"quality_search#{qul}#{key}#{offset- await _max_results_for_query(query)}#{orginal_offset}#{req}",
                 ),
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
             ]
@@ -902,7 +916,7 @@ async def quality_search(client: Client, query: CallbackQuery):
         btn.append(
             [
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
                 InlineKeyboardButton(
@@ -916,10 +930,10 @@ async def quality_search(client: Client, query: CallbackQuery):
             [
                 InlineKeyboardButton(
                     "⋞ ʙᴀᴄᴋ",
-                    callback_data=f"quality_search#{qul}#{key}#{offset- int(MAX_BTN)}#{orginal_offset}#{req}",
+                    callback_data=f"quality_search#{qul}#{key}#{offset- await _max_results_for_query(query)}#{orginal_offset}#{req}",
                 ),
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
                 InlineKeyboardButton(
@@ -996,10 +1010,10 @@ async def lang_search(client: Client, query: CallbackQuery):
         return
     search = search.replace("_", " ")
     files, n_offset, total = await get_search_results(
-        f"{search} {lang}", max_results=int(MAX_BTN), offset=offset
+        f"{search} {lang}", max_results=await _max_results_for_query(query), offset=offset
     )
     files2, n_offset2, total2 = await get_search_results(
-        f"{search} {lang2}", max_results=int(MAX_BTN), offset=offset
+        f"{search} {lang2}", max_results=await _max_results_for_query(query), offset=offset
     )
     total += total2
     try:
@@ -1082,10 +1096,10 @@ async def lang_search(client: Client, query: CallbackQuery):
             [
                 InlineKeyboardButton(
                     "⋞ ʙᴀᴄᴋ",
-                    callback_data=f"lang_search#{lang}#{key}#{offset- int(MAX_BTN)}#{orginal_offset}#{req}",
+                    callback_data=f"lang_search#{lang}#{key}#{offset- await _max_results_for_query(query)}#{orginal_offset}#{req}",
                 ),
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
             ]
@@ -1094,7 +1108,7 @@ async def lang_search(client: Client, query: CallbackQuery):
         btn.append(
             [
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
                 InlineKeyboardButton(
@@ -1108,10 +1122,10 @@ async def lang_search(client: Client, query: CallbackQuery):
             [
                 InlineKeyboardButton(
                     "⋞ ʙᴀᴄᴋ",
-                    callback_data=f"lang_search#{lang}#{key}#{offset- int(MAX_BTN)}#{orginal_offset}#{req}",
+                    callback_data=f"lang_search#{lang}#{key}#{offset- await _max_results_for_query(query)}#{orginal_offset}#{req}",
                 ),
                 InlineKeyboardButton(
-                    f"{math.ceil(offset / int(MAX_BTN)) + 1}/{math.ceil(total / int(MAX_BTN))}",
+                    f"{math.ceil(offset / await _max_results_for_query(query)) + 1}/{math.ceil(total / await _max_results_for_query(query))}",
                     callback_data="pages",
                 ),
                 InlineKeyboardButton(
@@ -1672,84 +1686,6 @@ async def cb_handler(client: Client, query: CallbackQuery):
             reply_markup=reply_markup,
         )
 
-    elif query.data.startswith("setgs"):
-        ident, set_type, status, grp_id = query.data.split("#")
-        userid = query.from_user.id if query.from_user else None
-        if not await is_check_admin(client, int(grp_id), userid):
-            await query.answer(script.ALRT_TXT, show_alert=True)
-            return
-        if status == "True":
-            await save_group_settings(int(grp_id), set_type, False)
-            await query.answer("ᴏғғ ❌")
-        else:
-            await save_group_settings(int(grp_id), set_type, True)
-            await query.answer("ᴏɴ ✅")
-        settings = await get_settings(int(grp_id))
-        if settings is not None:
-            buttons = [
-                [
-                    InlineKeyboardButton(
-                        "ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ",
-                        callback_data=f'setgs#auto_filter#{settings["auto_filter"]}#{grp_id}',
-                    ),
-                    InlineKeyboardButton(
-                        "ᴏɴ ✓" if settings["auto_filter"] else "ᴏғғ ✗",
-                        callback_data=f'setgs#auto_filter#{settings["auto_filter"]}#{grp_id}',
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "ɪᴍᴅʙ", callback_data=f'setgs#imdb#{settings["imdb"]}#{grp_id}'
-                    ),
-                    InlineKeyboardButton(
-                        "ᴏɴ ✓" if settings["imdb"] else "ᴏғғ ✗",
-                        callback_data=f'setgs#imdb#{settings["imdb"]}#{grp_id}',
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "sᴘᴇʟʟ ᴄʜᴇᴄᴋ",
-                        callback_data=f'setgs#spell_check#{settings["spell_check"]}#{grp_id}',
-                    ),
-                    InlineKeyboardButton(
-                        "ᴏɴ ✓" if settings["spell_check"] else "ᴏғғ ✗",
-                        callback_data=f'setgs#spell_check#{settings["spell_check"]}#{grp_id}',
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ",
-                        callback_data=f'setgs#auto_delete#{settings["auto_delete"]}#{grp_id}',
-                    ),
-                    InlineKeyboardButton(
-                        (
-                            f"{get_readable_time(DELETE_TIME)}"
-                            if settings["auto_delete"]
-                            else "ᴏғғ ✗"
-                        ),
-                        callback_data=f'setgs#auto_delete#{settings["auto_delete"]}#{grp_id}',
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "ʀᴇsᴜʟᴛ ᴍᴏᴅᴇ",
-                        callback_data=f'setgs#link#{settings["link"]}#{str(grp_id)}',
-                    ),
-                    InlineKeyboardButton(
-                        "⛓ ʟɪɴᴋ" if settings["link"] else "🧲 ʙᴜᴛᴛᴏɴ",
-                        callback_data=f'setgs#link#{settings["link"]}#{str(grp_id)}',
-                    ),
-                ],
-                [InlineKeyboardButton("🔗 sʜᴏʀᴛʟɪɴᴋ", callback_data="advanced_settings")],
-                [InlineKeyboardButton("❌ ᴄʟᴏsᴇ ❌", callback_data="close_data")],
-            ]
-            reply_markup = InlineKeyboardMarkup(buttons)
-            d = await query.message.edit_reply_markup(reply_markup)
-            await asyncio.sleep(300)
-            await d.delete()
-        else:
-            await query.message.edit_text("<b>ꜱᴏᴍᴇᴛʜɪɴɢ ᴡᴇɴᴛ ᴡʀᴏɴɢ</b>")
-
     elif query.data.startswith("show_options"):
         ident, user_id, msg_id = query.data.split("#")
         chnl_id = query.message.chat.id
@@ -2145,8 +2081,12 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
         search = message.text
         chat_id = message.chat.id
         settings = await get_settings(chat_id)
+        try:
+            max_results = max(1, min(20, int(settings.get("max_results", MAX_BTN))))
+        except (TypeError, ValueError):
+            max_results = int(MAX_BTN)
         searching_msg = await msg.reply_text(f"🔎 sᴇᴀʀᴄʜɪɴɢ {search}")
-        files, offset, total_results = await get_search_results(search)
+        files, offset, total_results = await get_search_results(search, max_results=max_results)
         await searching_msg.delete()
         if not files:
             if settings["spell_check"]:
@@ -2172,8 +2112,12 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
     batch_link = f"batchfiles#{message.chat.id}#{message.id}#{message.from_user.id}"
     temp.CHAT[message.from_user.id] = message.chat.id
     settings = await get_settings(message.chat.id)
+    try:
+        max_results = max(1, min(20, int(settings.get("max_results", MAX_BTN))))
+    except (TypeError, ValueError):
+        max_results = int(MAX_BTN)
     del_msg = (
-        f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(DELETE_TIME)}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>"
+        f"\n\n<b>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ ᴀꜰᴛᴇʀ <code>{get_readable_time(int(settings.get("delete_time", DELETE_TIME)))}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs</b>"
         if settings["auto_delete"]
         else ""
     )
@@ -2193,7 +2137,7 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
             for file in files
         ]
     if offset != "":
-        if total_results >= MAX_BTN:
+        if total_results >= max_results:
             btn.insert(
                 0,
                 [
@@ -2255,7 +2199,7 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
         btn.append(
             [
                 InlineKeyboardButton(
-                    text=f"1/{math.ceil(int(total_results) / int(MAX_BTN))}",
+                    text=f"1/{math.ceil(int(total_results) / max_results)}",
                     callback_data="pages",
                 ),
                 InlineKeyboardButton(
@@ -2269,7 +2213,7 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
         try:
             offset = int(offset)
         except:
-            offset = int(MAX_BTN)
+            offset = max_results
 
     imdb = (
         await get_poster(search, file=(files[0]).file_name)
@@ -2280,6 +2224,9 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
     if imdb:
         cap = TEMPLATE.format(
             query=search,
+            search=search,
+            mention=message.from_user.mention if message.from_user else "",
+            group=message.chat.title or str(message.chat.id),
             title=imdb["title"],
             votes=imdb["votes"],
             aka=imdb["aka"],
@@ -2333,7 +2280,7 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
                     reply_markup=InlineKeyboardMarkup(btn),
                 )
                 #  await delSticker(st)
-                await asyncio.sleep(DELETE_TIME)
+                await asyncio.sleep(int(settings.get("delete_time", DELETE_TIME)))
                 await k.delete()
                 try:
                     await message.delete()
@@ -2356,7 +2303,7 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
                     reply_markup=InlineKeyboardMarkup(btn),
                 )
                 # await delSticker(st)
-                await asyncio.sleep(DELETE_TIME)
+                await asyncio.sleep(int(settings.get("delete_time", DELETE_TIME)))
                 await k.delete()
                 try:
                     await message.delete()
@@ -2382,7 +2329,7 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
                     )
                 except Exception as e:
                     print("error", e)
-                await asyncio.sleep(DELETE_TIME)
+                await asyncio.sleep(int(settings.get("delete_time", DELETE_TIME)))
                 await k.delete()
                 try:
                     await message.delete()
@@ -2406,7 +2353,7 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
         # await delSticker(st)
         if settings["auto_delete"]:
             #  await delSticker(st)
-            await asyncio.sleep(DELETE_TIME)
+            await asyncio.sleep(int(settings.get("delete_time", DELETE_TIME)))
             await k.delete()
             try:
                 await message.delete()
