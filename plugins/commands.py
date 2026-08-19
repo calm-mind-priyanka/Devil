@@ -48,6 +48,37 @@ movie_series_db = JsTopDB(DATABASE_URI)
 verification_ids = {}
 
 
+def _file_mode_greeting():
+    hour = dt.now(pytz.timezone("Asia/Kolkata")).hour
+    if 5 <= hour < 12:
+        return "ɢᴏᴏᴅ ᴍᴏʀɴɪɴɢ"
+    if 12 <= hour < 17:
+        return "ɢᴏᴏᴅ ᴀғᴛᴇʀɴᴏᴏɴ"
+    if 17 <= hour < 21:
+        return "ɢᴏᴏᴅ ᴇᴠᴇɴɪɴɢ"
+    return "ɢᴏᴏᴅ ɴɪɢʜᴛ"
+
+
+def _file_mode_caption(settings, file, mention):
+    template = settings.get("file_mode_caption") or FILE_MODE_CAPTION
+    return template.format(
+        greeting=_file_mode_greeting(),
+        mention=mention or "ᴜsᴇʀ",
+        file_name=formate_file_name(file.file_name),
+        file_size=get_size(file.file_size),
+        file_caption=file.caption or "",
+    )
+
+
+def _file_mode_markup(settings, file_id):
+    tutorial = settings.get("tutorial", TUTORIAL)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📁 ꜰɪʟᴇ", callback_data=f"stream#{file_id}"),
+         InlineKeyboardButton("ʜᴏᴡ ᴛᴏ ᴠᴇʀɪꜰʏ ❓", url=tutorial)],
+        [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
+    ])
+
+
 @Client.on_message(filters.command("start") & filters.incoming)
 async def start(client: Client, message):
     await message.react(emoji=random.choice(REACTIONS))
@@ -454,25 +485,25 @@ async def start(client: Client, message):
             user_id = message.from_user.id
             grp_id = temp.CHAT.get(user_id)
             settings = await get_settings(grp_id)
-            CAPTION = settings["caption"]
-            f_caption = CAPTION.format(
-                file_name=formate_file_name(file.file_name),
-                file_size=get_size(file.file_size),
-                file_caption=file.caption,
-            )
-            btn = [
-                [
-                    InlineKeyboardButton(
-                        "✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f"stream#{file.file_id}"
-                    )
-                ]
-            ]
+            if settings.get("file_mode", False):
+                f_caption = _file_mode_caption(settings, file, message.from_user.mention)
+                reply_markup = _file_mode_markup(settings, file.file_id)
+            else:
+                CAPTION = settings["caption"]
+                f_caption = CAPTION.format(
+                    file_name=formate_file_name(file.file_name),
+                    file_size=get_size(file.file_size),
+                    file_caption=file.caption,
+                )
+                reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(
+                    "✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f"stream#{file.file_id}"
+                )]])
             toDel = await client.send_cached_media(
                 chat_id=message.from_user.id,
                 file_id=file.file_id,
                 caption=f_caption,
                 protect_content=bool(settings.get("file_secure", PROTECT_CONTENT)),
-                reply_markup=InlineKeyboardMarkup(btn),
+                reply_markup=reply_markup,
             )
             files_to_delete.append(toDel)
 
@@ -513,19 +544,19 @@ async def start(client: Client, message):
         return await message.reply("<b>⚠️ ᴀʟʟ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>")
     files = files_[0]
     settings = await get_settings(grp_id)
-    CAPTION = settings["caption"]
-    f_caption = CAPTION.format(
-        file_name=formate_file_name(files.file_name),
-        file_size=get_size(files.file_size),
-        file_caption=files.caption,
-    )
-    btn = [
-        [
-            InlineKeyboardButton(
-                "✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f"stream#{file_id}"
-            )
-        ]
-    ]
+    if settings.get("file_mode", False):
+        f_caption = _file_mode_caption(settings, files, message.from_user.mention)
+        reply_markup = _file_mode_markup(settings, file_id)
+    else:
+        CAPTION = settings["caption"]
+        f_caption = CAPTION.format(
+            file_name=formate_file_name(files.file_name),
+            file_size=get_size(files.file_size),
+            file_caption=files.caption,
+        )
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f"stream#{file_id}"
+        )]])
     toDel = await client.send_cached_media(
         chat_id=message.from_user.id,
         file_id=file_id,
