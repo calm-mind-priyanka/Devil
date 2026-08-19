@@ -88,6 +88,7 @@ SHORTENER_API3 = environ.get(
 SHORTENER_WEBSITE3 = environ.get("SHORTENER_WEBSITE3", "CPMShort.com")
 TWO_VERIFY_GAP = int(environ.get("TWO_VERIFY_GAP", "300"))
 THREE_VERIFY_GAP = int(environ.get("THREE_VERIFY_GAP", "300"))
+FILE_MODE_CAPTION = environ.get("FILE_MODE_CAPTION", script.FILE_MODE_CAPTION)
 
 # Language & Quality & Season & Year
 LANGUAGES = [
