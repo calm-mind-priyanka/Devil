@@ -47,6 +47,11 @@ class Database:
         "shortner_three": SHORTENER_WEBSITE3,
         "api_three": SHORTENER_API3,
         "third_verify_time": THREE_VERIFY_GAP,
+        # Settings added by the master settings layer; old groups fall back to these values.
+        "max_results": MAX_BTN,
+        "delete_time": DELETE_TIME,
+        "request_channel": REQUEST_CHANNEL,
+        "fsub_channels": [AUTH_CHANNEL],
     }
 
     def new_user(self, id, name):
