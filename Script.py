@@ -119,6 +119,13 @@ User - {}"""
 
     FILE_CAPTION = """<b>{file_name}</b>"""
 
+    FILE_MODE_CAPTION = """<b>👋 {greeting} {mention},
+
+📁 <b>{file_name}</b>
+📦 <b>sɪᴢᴇ:</b> {file_size}
+
+🔗 <b>ʏᴏᴜʀ ғɪʟᴇ ɪs ʀᴇᴀᴅʏ, ᴄʟɪᴄᴋ ᴛʜᴇ ʟɪɴᴋ ʙᴇʟᴏᴡ.</b></b>"""
+
     ALRT_TXT = """ᴡʜᴀᴛ ᴀʀᴇ ʏᴏᴜ sᴇᴀʀᴄʜɪɴɢ !?"""
 
     OLD_ALRT_TXT = """ʏᴏᴜ ᴀʀᴇ ᴜsɪɴɢ ᴍʏ ᴏʟᴅ ᴍᴇssᴀɢᴇs..sᴇɴᴅ ᴀ ɴᴇᴡ ʀᴇǫᴜᴇsᴛ.."""
