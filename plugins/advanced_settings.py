@@ -1,5 +1,7 @@
 import asyncio
 import requests
+from datetime import datetime
+import pytz
 from pyrogram import Client, filters, enums, ContinuePropagation
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -37,7 +39,7 @@ def _main_settings_buttons(settings, grp_id):
          InlineKeyboardButton(f"🔍 SPELL CHECK · {onoff('spell_check')}", callback_data=f"set_page#spell_check#{grp_id}")],
         [InlineKeyboardButton(f"🗑️ AUTO DELETE · {onoff('auto_delete')}", callback_data=f"set_page#auto_delete#{grp_id}"),
          InlineKeyboardButton(f"📚 RESULT MODE · {'LINKS 🖇' if settings.get('link') else 'BUTTONS 🎯'}", callback_data=f"set_page#link#{grp_id}")],
-        [InlineKeyboardButton(f"📁 FILE MODE · {'VERIFY ♻️' if settings.get('is_verify') else 'SHORTLINK 📎'}", callback_data=f"set_page#file_mode#{grp_id}"),
+        [InlineKeyboardButton(f"📁 ꜰɪʟᴇ ᴍᴏᴅᴇ · {'ꜰɪʟᴇ 📁' if settings.get('file_mode') else 'ᴠᴇʀɪꜰʏ ♻️'}", callback_data=f"set_page#file_mode#{grp_id}"),
          InlineKeyboardButton("📝 FILES CAPTIONS", callback_data=f"set_page#caption#{grp_id}")],
         [InlineKeyboardButton("🎬 TUTORIAL LINK", callback_data=f"set_page#tutorial#{grp_id}"),
          InlineKeyboardButton("🖇️ SET SHORTLINK", callback_data=f"set_page#shortlink#{grp_id}")],
@@ -118,7 +120,7 @@ def _page_text(key, settings):
     if key == "link":
         return f"<b>📚 RESULT MODE</b>\n\nCurrent: {'LINKS 🖇' if settings.get('link') else 'BUTTONS 🎯'}"
     if key == "file_mode":
-        return f"<b>📁 FILE MODE</b>\n\nBot modes: Verify and Shortlink.\nCurrent: {'♻️ VERIFY' if settings.get('is_verify') else '📎 SHORTLINK'}"
+        return f"<b>📁 ꜰɪʟᴇ ᴍᴏᴅᴇ</b>\n\nꜰɪʟᴇ ᴍᴏᴅᴇ ᴄʜᴀɴɢᴇs ᴏɴʟʏ ᴛʜᴇ ғɪɴᴀʟ ғɪʟᴇ ᴍᴇssᴀɢᴇ ᴀɴᴅ ɪɴʟɪɴᴇ ʙᴜᴛᴛᴏɴs.\nꜱʜᴏʀᴛʟɪɴᴋ/ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ɪs ᴄᴏɴᴛʀᴏʟʟᴇᴅ sᴇᴘᴀʀᴀᴛᴇʟʏ.\n\nᴄᴜʀʀᴇɴᴛ: {'ᴏɴ ✅' if settings.get('file_mode') else 'ᴏғғ ❌'}"
     if key == "caption":
         return f"<b>📝 FILES CAPTIONS</b>\n\nCurrent caption:\n<code>{settings.get('caption', FILE_CAPTION)}</code>\n\nSupported placeholder: {{file_name}}"
     if key == "tutorial":
@@ -171,7 +173,7 @@ def _page_buttons(key, settings, grp_id):
         if key == "auto_delete":
             b.append([InlineKeyboardButton("Set time", callback_data=f"set_input#delete_time#{grp_id}")])
         if key == "file_mode":
-            b = [[InlineKeyboardButton("Set verify mode" if not settings.get("is_verify") else "Set shortlink mode", callback_data=f"set_toggle#file_mode#{grp_id}")]]
+            b = [[InlineKeyboardButton("♻️ ᴠᴇʀɪғʏ" if settings.get("file_mode") else "📁 ꜰɪʟᴇ ᴍᴏᴅᴇ", callback_data=f"set_toggle#file_mode#{grp_id}")]]
     elif key == "imdb":
         b = [
             [InlineKeyboardButton("Set template", callback_data=f"set_input#template#{grp_id}")],
@@ -185,7 +187,7 @@ def _page_buttons(key, settings, grp_id):
         b = [
             [InlineKeyboardButton(
                 "Turn verification OFF ❌" if settings.get("is_verify") else "Turn verification ON ✅",
-                callback_data=f"set_toggle#file_mode#{grp_id}",
+                callback_data=f"set_toggle#is_verify#{grp_id}",
             )],
             [
                 InlineKeyboardButton("Set shortlink 1", callback_data=f"set_input#shortner#{grp_id}"),
@@ -278,12 +280,8 @@ async def settings_callback(client, query):
             return await show_group_settings(client, query, gid)
         if action == "set_toggle":
             settings = await get_settings(gid)
-            if key == "file_mode":
-                value = not bool(settings.get("is_verify"))
-                await save_group_settings(gid, "is_verify", value)
-            else:
-                value = not bool(settings.get(key))
-                await save_group_settings(gid, key, value)
+            value = not bool(settings.get(key))
+            await save_group_settings(gid, key, value)
             return await show_page(client, query, key, gid)
         if action == "set_default":
             defaults = db.default.copy()
@@ -458,4 +456,9 @@ async def advanced_input(client, message):
         await save_group_settings(gid, key, value)
         PENDING.pop((uid, gid), None)
 
-    await message.reply_text("<b>ᴜᴘᴅᴀᴛᴇᴅ ✅</b>")
+    confirmation = await message.reply_text("<b>ᴜᴘᴅᴀᴛᴇᴅ ✅</b>")
+    await asyncio.sleep(2)
+    try:
+        await confirmation.delete()
+    except Exception:
+        pass
