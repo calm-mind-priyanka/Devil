@@ -120,7 +120,9 @@ def _page_text(key, settings):
     if key == "link":
         return f"<b>📚 RESULT MODE</b>\n\nCurrent: {'LINKS 🖇' if settings.get('link') else 'BUTTONS 🎯'}"
     if key == "file_mode":
-        return f"<b>📁 ꜰɪʟᴇ ᴍᴏᴅᴇ</b>\n\nꜰɪʟᴇ ᴍᴏᴅᴇ ᴄʜᴀɴɢᴇs ᴏɴʟʏ ᴛʜᴇ ғɪɴᴀʟ ғɪʟᴇ ᴍᴇssᴀɢᴇ ᴀɴᴅ ɪɴʟɪɴᴇ ʙᴜᴛᴛᴏɴs.\nꜱʜᴏʀᴛʟɪɴᴋ/ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ɪs ᴄᴏɴᴛʀᴏʟʟᴇᴅ sᴇᴘᴀʀᴀᴛᴇʟʏ.\n\nᴄᴜʀʀᴇɴᴛ: {'ᴏɴ ✅' if settings.get('file_mode') else 'ᴏғғ ❌'}"
+        mode = settings.get("file_mode_type", "verify")
+        mode_text = "♻️ ᴠᴇʀɪғʏ" if mode == "verify" else "📎 ꜱʜᴏʀᴛʟɪɴᴋ"
+        return f"<b>📁 ꜰɪʟᴇ ᴍᴏᴅᴇ</b>\n\nʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʏᴏᴜʀ ꜰɪʟᴇs ᴍᴏᴅᴇ.\n\nꜰɪʟᴇ ᴍᴏᴅᴇ ᴄʜᴀɴɢᴇs ᴏɴʟʏ ᴛʜᴇ ғɪɴᴀʟ ғɪʟᴇ ᴍᴇssᴀɢᴇ ᴀɴᴅ ɪɴʟɪɴᴇ ʙᴜᴛᴛᴏɴs.\nꜱʜᴏʀᴛʟɪɴᴋ/ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ɪs ᴄᴏɴᴛʀᴏʟʟᴇᴅ sᴇᴘᴀʀᴀᴛᴇʟʏ.\n\nᴄᴜʀʀᴇɴᴛ: {mode_text}"
     if key == "caption":
         return f"<b>📝 FILES CAPTIONS</b>\n\nCurrent caption:\n<code>{settings.get('caption', FILE_CAPTION)}</code>\n\nSupported placeholder: {{file_name}}"
     if key == "tutorial":
@@ -173,7 +175,10 @@ def _page_buttons(key, settings, grp_id):
         if key == "auto_delete":
             b.append([InlineKeyboardButton("Set time", callback_data=f"set_input#delete_time#{grp_id}")])
         if key == "file_mode":
-            b = [[InlineKeyboardButton("♻️ ᴠᴇʀɪғʏ" if settings.get("file_mode") else "📁 ꜰɪʟᴇ ᴍᴏᴅᴇ", callback_data=f"set_toggle#file_mode#{grp_id}")]]
+            mode = settings.get("file_mode_type", "verify")
+            next_mode = "shortlink" if mode == "verify" else "verify"
+            label = "📎 ꜱᴇᴛ sʜᴏʀᴛʟɪɴᴋ ᴍᴏᴅᴇ" if mode == "verify" else "♻️ sᴇᴛ ᴠᴇʀɪғʏ ᴍᴏᴅᴇ"
+            b = [[InlineKeyboardButton(label, callback_data=f"set_file_mode#{next_mode}#{grp_id}")]]
     elif key == "imdb":
         b = [
             [InlineKeyboardButton("Set template", callback_data=f"set_input#template#{grp_id}")],
@@ -255,7 +260,7 @@ async def settings_callback(client, query):
 
         parts = data.split("#")
         action = parts[0]
-        if action in {"set_page", "set_toggle", "set_input", "set_default", "set_delete"}:
+        if action in {"set_page", "set_toggle", "set_input", "set_default", "set_delete", "set_file_mode"}:
             key = parts[1]
             gid = int(parts[2])
         elif action in {"set_back"}:
@@ -278,6 +283,13 @@ async def settings_callback(client, query):
         if action == "set_reset":
             await save_default_settings(gid)
             return await show_group_settings(client, query, gid)
+        if action == "set_file_mode":
+            mode = key
+            if mode not in {"verify", "shortlink"}:
+                mode = "verify"
+            await save_group_settings(gid, "file_mode", True)
+            await save_group_settings(gid, "file_mode_type", mode)
+            return await show_page(client, query, "file_mode", gid)
         if action == "set_toggle":
             settings = await get_settings(gid)
             value = not bool(settings.get(key))
