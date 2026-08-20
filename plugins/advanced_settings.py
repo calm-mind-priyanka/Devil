@@ -50,7 +50,7 @@ def _cancel_text():
 def _cancel_button(group_id):
     return [
         InlineKeyboardButton(
-            "/cancel",
+            "ᴄᴀɴᴄᴇʟ ❌",
             callback_data=f"set_cancel#{group_id}"
         )
     ]
@@ -91,31 +91,31 @@ def _main_settings_buttons(settings, grp_id):
     return [
         [
             InlineKeyboardButton(
-                f"📝 AUTO FILTER · {onoff('auto_filter')}",
+                f"📝 ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ",
                 callback_data=f"set_page#auto_filter#{grp_id}"
             ),
             InlineKeyboardButton(
-                f"🔒 FILE SECURE · {onoff('file_secure')}",
+                f"🔒 ꜰɪʟᴇ sᴇᴄᴜʀᴇ",
                 callback_data=f"set_page#file_secure#{grp_id}"
             )
         ],
         [
             InlineKeyboardButton(
-                f"🎬 IMDB · {onoff('imdb')}",
+                f"🎬 ɪᴍᴅʙ",
                 callback_data=f"set_page#imdb#{grp_id}"
             ),
             InlineKeyboardButton(
-                f"🔍 SPELL CHECK · {onoff('spell_check')}",
+                f"🔍 sᴘᴇʟʟ ᴄʜᴇᴄᴋ",
                 callback_data=f"set_page#spell_check#{grp_id}"
             )
         ],
         [
             InlineKeyboardButton(
-                f"🗑️ AUTO DELETE · {onoff('auto_delete')}",
+                f"🗑️ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ",
                 callback_data=f"set_page#auto_delete#{grp_id}"
             ),
             InlineKeyboardButton(
-                f"📚 RESULT MODE · {'LINKS 🖇' if settings.get('link') else 'BUTTONS 🎯'}",
+                f"📚 ʀᴇsᴜʟᴛ ᴍᴏᴅᴇ",
                 callback_data=f"set_page#link#{grp_id}"
             )
         ],
@@ -125,13 +125,13 @@ def _main_settings_buttons(settings, grp_id):
                 callback_data=f"set_page#file_mode#{grp_id}"
             ),
             InlineKeyboardButton(
-                "📝 FILES CAPTIONS",
+                "📝 ꜰɪʟᴇs ᴄᴀᴘᴛɪᴏɴs",
                 callback_data=f"set_page#caption#{grp_id}"
             )
         ],
         [
             InlineKeyboardButton(
-                "🎬 TUTORIAL LINK",
+                "🎬 ᴛᴜᴛᴏʀɪᴀʟ ʟɪɴᴋ",
                 callback_data=f"set_page#tutorial#{grp_id}"
             ),
             InlineKeyboardButton(
@@ -141,17 +141,17 @@ def _main_settings_buttons(settings, grp_id):
         ],
         [
             InlineKeyboardButton(
-                "📢 SET MOVIE REQ",
+                "📢 sᴇᴛ ᴍᴏᴠɪᴇ ʀᴇǫ",
                 callback_data=f"set_page#request_channel#{grp_id}"
             ),
             InlineKeyboardButton(
-                "ℹ️ DETAILS",
+                "ℹ️ ᴅᴇᴛᴀɪʟs",
                 callback_data=f"set_page#details#{grp_id}"
             )
         ],
         [
             InlineKeyboardButton(
-                "📢 FORCE CHANNEL",
+                "📢 ꜰᴏʀᴄᴇ ᴄʜᴀɴɴᴇʟ",
                 callback_data=f"set_page#fsub#{grp_id}"
             ),
             InlineKeyboardButton(
@@ -161,11 +161,7 @@ def _main_settings_buttons(settings, grp_id):
         ],
         [
             InlineKeyboardButton(
-                "↩️ BACK TO GROUP LIST",
-                callback_data=f"set_groups#{grp_id}"
-            ),
-            InlineKeyboardButton(
-                "‼️ CLOSE SETTINGS MENU ‼️",
+                "‼️ ᴄʟᴏsᴇ sᴇᴛᴛɪɴɢs ᴍᴇɴᴜ ‼️",
                 callback_data=f"set_close#{grp_id}"
             )
         ],
@@ -428,17 +424,19 @@ def _page_buttons(key, settings, grp_id):
     b = []
     if key in {"auto_filter", "file_secure", "spell_check", "auto_delete", "link", "file_mode"}:
         if key == "link":
-            b.append([InlineKeyboardButton("Set button mode" if settings.get("link") else "Set links mode", callback_data=f"set_toggle#{key}#{grp_id}")])
-        else:
-            b.append([InlineKeyboardButton("Turn off" if settings.get(key) else "Turn on", callback_data=f"set_toggle#{key}#{grp_id}")])
-
-        if key == "auto_delete":
-            b.append([InlineKeyboardButton("Set time", callback_data=f"set_input#delete_time#{grp_id}")])
-        if key == "file_mode":
+            label = "sᴇᴛ ʙᴜᴛᴛᴏɴ ᴍᴏᴅᴇ" if settings.get("link") else "sᴇᴛ ʟɪɴᴋs ᴍᴏᴅᴇ"
+            b.append([InlineKeyboardButton(label, callback_data=f"set_toggle#{key}#{grp_id}")])
+        elif key == "file_mode":
             mode = settings.get("file_mode_type", "verify")
             next_mode = "shortlink" if mode == "verify" else "verify"
-            label = "📎 ꜱᴇᴛ sʜᴏʀᴛʟɪɴᴋ ᴍᴏᴅᴇ" if mode == "verify" else "♻️ sᴇᴛ ᴠᴇʀɪғʏ ᴍᴏᴅᴇ"
-            b = [[InlineKeyboardButton(label, callback_data=f"set_file_mode#{next_mode}#{grp_id}")]]
+            label = "📎 sᴇᴛ sʜᴏʀᴛʟɪɴᴋ ᴍᴏᴅᴇ" if mode == "verify" else "♻️ sᴇᴛ ᴠᴇʀɪғʏ ᴍᴏᴅᴇ"
+            b.append([InlineKeyboardButton(label, callback_data=f"set_file_mode#{next_mode}#{grp_id}")])
+        else:
+            label = "ᴛᴜʀɴ ᴏꜰꜰ ❌" if settings.get(key) else "ᴛᴜʀɴ ᴏɴ ✅"
+            b.append([InlineKeyboardButton(label, callback_data=f"set_toggle#{key}#{grp_id}")])
+
+        if key == "auto_delete":
+            b.append([InlineKeyboardButton("⏱️ sᴇᴛ ᴛɪᴍᴇ", callback_data=f"set_input#delete_time#{grp_id}")])
 
     elif key == "shortlink":
         return _shortlink_master_buttons(settings, grp_id)
@@ -455,45 +453,44 @@ def _page_buttons(key, settings, grp_id):
     elif key == "imdb":
         b = [
             [
-                InlineKeyboardButton("Set template", callback_data=f"set_input#template#{grp_id}"),
-                InlineKeyboardButton("Default template", callback_data=f"set_default#template#{grp_id}")
+                InlineKeyboardButton("sᴇᴛ ᴛᴇᴍᴘʟᴀᴛᴇ", callback_data=f"set_input#template#{grp_id}"),
+                InlineKeyboardButton("ᴅᴇꜰᴀᴜʟᴛ ᴛᴇᴍᴘʟᴀᴛᴇ", callback_data=f"set_default#template#{grp_id}")
             ],
-            [InlineKeyboardButton("Off poster", callback_data=f"set_toggle#imdb#{grp_id}")]
+            [InlineKeyboardButton("ᴛᴜʀɴ ᴏꜰꜰ ᴘᴏsᴛᴇʀ", callback_data=f"set_toggle#imdb#{grp_id}")]
         ]
     elif key == "caption":
         b = [[
-            InlineKeyboardButton("Set caption", callback_data=f"set_input#caption#{grp_id}"),
-            InlineKeyboardButton("Default caption", callback_data=f"set_default#caption#{grp_id}")
+            InlineKeyboardButton("sᴇᴛ ᴄᴀᴘᴛɪᴏɴ", callback_data=f"set_input#caption#{grp_id}"),
+            InlineKeyboardButton("ᴅᴇꜰᴀᴜʟᴛ ᴄᴀᴘᴛɪᴏɴ", callback_data=f"set_default#caption#{grp_id}")
         ]]
     elif key == "tutorial":
         b = [
             [
-                InlineKeyboardButton("Set tutorial 1", callback_data=f"set_input#tutorial#{grp_id}"),
-                InlineKeyboardButton("Set tutorial 2", callback_data=f"set_input#tutorial_2#{grp_id}")
+                InlineKeyboardButton("sᴇᴛ ᴛᴜᴛᴏʀɪᴀʟ 1", callback_data=f"set_input#tutorial#{grp_id}"),
+                InlineKeyboardButton("sᴇᴛ ᴛᴜᴛᴏʀɪᴀʟ 2", callback_data=f"set_input#tutorial_2#{grp_id}")
             ],
-            [InlineKeyboardButton("Set tutorial 3", callback_data=f"set_input#tutorial_3#{grp_id}")]
+            [InlineKeyboardButton("sᴇᴛ ᴛᴜᴛᴏʀɪᴀʟ 3", callback_data=f"set_input#tutorial_3#{grp_id}")]
         ]
     elif key == "request_channel":
         b = [[
-            InlineKeyboardButton("Set channel", callback_data=f"set_input#request_channel#{grp_id}"),
-            InlineKeyboardButton("Delete channel", callback_data=f"set_delete#request_channel#{grp_id}")
+            InlineKeyboardButton("sᴇᴛ ᴄʜᴀɴɴᴇʟ", callback_data=f"set_input#request_channel#{grp_id}"),
+            InlineKeyboardButton("ᴅᴇʟᴇᴛᴇ ᴄʜᴀɴɴᴇʟ", callback_data=f"set_delete#request_channel#{grp_id}")
         ]]
     elif key == "fsub":
         b = [[
-            InlineKeyboardButton("Set channel", callback_data=f"set_input#fsub_add#{grp_id}"),
-            InlineKeyboardButton("Delete channel", callback_data=f"set_input#fsub_delete#{grp_id}")
+            InlineKeyboardButton("sᴇᴛ ᴄʜᴀɴɴᴇʟ", callback_data=f"set_input#fsub_add#{grp_id}"),
+            InlineKeyboardButton("ᴅᴇʟᴇᴛᴇ ᴄʜᴀɴɴᴇʟ", callback_data=f"set_input#fsub_delete#{grp_id}")
         ]]
     elif key == "max_results":
         b = [[
-            InlineKeyboardButton("Set max result", callback_data=f"set_input#max_results#{grp_id}"),
-            InlineKeyboardButton("Default max result", callback_data=f"set_default#max_results#{grp_id}")
+            InlineKeyboardButton("sᴇᴛ ᴍᴀx ʀᴇsᴜʟᴛ", callback_data=f"set_input#max_results#{grp_id}"),
+            InlineKeyboardButton("ᴅᴇꜰᴀᴜʟᴛ ᴍᴀx ʀᴇsᴜʟᴛ", callback_data=f"set_default#max_results#{grp_id}")
         ]]
     elif key == "details":
-        b = [[InlineKeyboardButton("Reset all", callback_data=f"set_reset#{grp_id}")]]
+        b = [[InlineKeyboardButton("ʀᴇsᴇᴛ ᴀʟʟ", callback_data=f"set_reset#{grp_id}")]]
 
     b.append(_back(grp_id, "main"))
     return b
-
 
 async def show_page(client, query, key, grp_id, extra=None):
     settings = await get_settings(int(grp_id))
@@ -663,24 +660,24 @@ async def settings_callback(client, query):
             return await show_page(client, query, key, gid)
 
         if action == "set_input":
-            origin_page = "shortlink_list" if key in {"shortner", "shortner_two", "shortner_three"} else ("verification_gap" if key in {"verify_time", "third_verify_time"} else "main")
+            origin_page = ("shortlink_list" if key in {"shortner", "shortner_two", "shortner_three"} else ("verification_gap" if key in {"verify_time", "third_verify_time"} else ("tutorial" if key in {"tutorial", "tutorial_2", "tutorial_3"} else "main")))
             state = _prompt_state(query, gid, key, origin_page)
             prompt = {
-                "delete_time": "Send delete time in seconds.",
-                "template": "Send your IMDB template. Supported: {search}, {mention}, {group}",
-                "caption": "Send your file caption. Supported: {file_name}",
-                "max_results": "Send max results from 1 to 20.",
-                "request_channel": "Send request channel ID.",
-                "fsub_add": "Send force-subscribe channel ID.",
-                "fsub_delete": "Send the force-subscribe channel ID to delete.",
-                "tutorial": "Send tutorial 1 URL.",
-                "tutorial_2": "Send tutorial 2 URL.",
-                "tutorial_3": "Send tutorial 3 URL.",
-            }.get(key, "Send the new value.")
+                "delete_time": "sᴇɴᴅ ᴅᴇʟᴇᴛᴇ ᴛɪᴍᴇ ɪɴ sᴇᴄᴏɴᴅs.",
+                "template": "sᴇɴᴅ ʏᴏᴜʀ ɪᴍᴅʙ ᴛᴇᴍᴘʟᴀᴛᴇ. sᴜᴘᴘᴏʀᴛᴇᴅ: {search}, {mention}, {group}",
+                "caption": "sᴇɴᴅ ʏᴏᴜʀ ꜰɪʟᴇ ᴄᴀᴘᴛɪᴏɴ. sᴜᴘᴘᴏʀᴛᴇᴅ: {file_name}",
+                "max_results": "sᴇɴᴅ ᴍᴀx ʀᴇsᴜʟᴛs ꜰʀᴏᴍ 1 ᴛᴏ 20.",
+                "request_channel": "sᴇɴᴅ ʀᴇǫᴜᴇsᴛ ᴄʜᴀɴɴᴇʟ ɪᴅ.",
+                "fsub_add": "sᴇɴᴅ ꜰᴏʀᴄᴇ-sᴜʙsᴄʀɪʙᴇ ᴄʜᴀɴɴᴇʟ ɪᴅ.",
+                "fsub_delete": "sᴇɴᴅ ᴛʜᴇ ꜰᴏʀᴄᴇ-sᴜʙsᴄʀɪʙᴇ ᴄʜᴀɴɴᴇʟ ɪᴅ ᴛᴏ ᴅᴇʟᴇᴛᴇ.",
+                "tutorial": "sᴇɴᴅ ᴛᴜᴛᴏʀɪᴀʟ 1 ᴜʀʟ.",
+                "tutorial_2": "sᴇɴᴅ ᴛᴜᴛᴏʀɪᴀʟ 2 ᴜʀʟ.",
+                "tutorial_3": "sᴇɴᴅ ᴛᴜᴛᴏʀɪᴀʟ 3 ᴜʀʟ.",
+            }.get(key, "sᴇɴᴅ ᴛʜᴇ ɴᴇᴡ ᴠᴀʟᴜᴇ.")
 
             return await _edit_prompt(
                 client, state,
-                f"<b>{prompt}</b>\n\n<b>/cancel</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
+                f"<b>{prompt}</b>\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
                 InlineKeyboardMarkup([_cancel_button(gid)])
             )
 
@@ -698,7 +695,7 @@ async def settings_callback(client, query):
                 state = _prompt_state(query, gid, f"shortner_{number}_domain", "shortlink_list", number=number)
                 return await _edit_prompt(
                     client, state,
-                    "<b>ꜱᴇɴᴅ ᴍᴇ ꜱʜᴏʀᴛʟɪɴᴋ ᴜʀʟ ᴡɪᴛʜᴏᴜᴛ https ꜰᴏʀᴍᴀᴛ -</b>\n\n<code>https://tnshort.net</code> ❌\n<code>tnshort.net</code> ✅\n\n<b>/cancel</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
+                    "<b>ꜱᴇɴᴅ ᴍᴇ ꜱʜᴏʀᴛʟɪɴᴋ ᴜʀʟ ᴡɪᴛʜᴏᴜᴛ https ꜰᴏʀᴍᴀᴛ -</b>\n\n<code>https://tnshort.net</code> ❌\n<code>tnshort.net</code> ✅\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
                     InlineKeyboardMarkup([_cancel_button(gid)])
                 )
 
@@ -749,7 +746,7 @@ async def settings_callback(client, query):
             state = _prompt_state(query, gid, f"gap_{number}", "verification_gap", number=number)
             return await _edit_prompt(
                 client, state,
-                "<b>ꜱᴇɴᴅ ᴍᴇ ᴀ ᴛɪᴍᴇ ɪɴ ʟɪᴋᴇ ᴛʜɪs -</b> <code>1h</code> ᴏʀ <code>15m</code>\n\n<b>/cancel</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
+                "<b>ꜱᴇɴᴅ ᴍᴇ ᴀ ᴛɪᴍᴇ ɪɴ ʟɪᴋᴇ ᴛʜɪs -</b> <code>1h</code> ᴏʀ <code>15m</code>\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
                 InlineKeyboardMarkup([_cancel_button(gid)])
             )
 
@@ -770,6 +767,11 @@ async def advanced_cancel(client, message):
     (uid, gid), state = candidates[-1]
     PENDING.pop((uid, gid), None)
     page = state.get("origin_page", "main")
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
     try:
         if page == "shortlink_list":
@@ -831,7 +833,7 @@ async def advanced_input(client, message):
         if not re.fullmatch(r"[A-Za-z0-9.-]+(?::\d+)?", domain):
             return await _edit_prompt(
                 client, state,
-                "<b>❌ ɪɴᴠᴀʟɪᴅ ꜱʜᴏʀᴛʟɪɴᴋ ᴅᴏᴍᴀɪɴ.</b>\n\nꜱᴇɴᴅ ᴏɴʟʏ ᴛʜᴇ ᴅᴏᴍᴀɪɴ, ᴇxᴀᴍᴘʟᴇ: <code>tnshort.net</code>\n\n<b>/cancel</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
+                "<b>❌ ɪɴᴠᴀʟɪᴅ ꜱʜᴏʀᴛʟɪɴᴋ ᴅᴏᴍᴀɪɴ.</b>\n\nꜱᴇɴᴅ ᴏɴʟʏ ᴛʜᴇ ᴅᴏᴍᴀɪɴ, ᴇxᴀᴍᴘʟᴇ: <code>tnshort.net</code>\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
                 InlineKeyboardMarkup([_cancel_button(gid)])
             )
         state["type"] = f"shortner_{number}_api"
@@ -839,7 +841,7 @@ async def advanced_input(client, message):
         PENDING[(uid, gid)] = state
         return await _edit_prompt(
             client, state,
-            "<b>sᴇɴᴅ ᴍᴇ ᴀ sʜᴏʀᴛʟɪɴᴋ ᴀᴘɪ...</b>\n\n<b>/cancel</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
+            "<b>sᴇɴᴅ ᴍᴇ ᴀ sʜᴏʀᴛʟɪɴᴋ ᴀᴘɪ...</b>\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
             InlineKeyboardMarkup([_cancel_button(gid)])
         )
 
@@ -876,7 +878,7 @@ async def advanced_input(client, message):
         if seconds is None:
             return await _edit_prompt(
                 client, state,
-                "<b>❌ ᴘʟᴇᴀsᴇ sᴇɴᴅ ᴀ ᴠᴀʟɪᴅ ᴛɪᴍᴇ ʟɪᴋᴇ <code>1h</code> ᴏʀ <code>15m</code>.</b>\n\n<b>/cancel</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
+                "<b>❌ ᴘʟᴇᴀsᴇ sᴇɴᴅ ᴀ ᴠᴀʟɪᴅ ᴛɪᴍᴇ ʟɪᴋᴇ <code>1h</code> ᴏʀ <code>15m</code>.</b>\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
                 InlineKeyboardMarkup([_cancel_button(gid)])
             )
         setting_key = "verify_time" if number == 1 else "third_verify_time"
@@ -964,9 +966,26 @@ async def advanced_input(client, message):
         await save_group_settings(gid, key, value)
         PENDING.pop((uid, gid), None)
 
-    confirmation = await message.reply_text("<b>ᴜᴘᴅᴀᴛᴇᴅ ✅</b>")
-    await asyncio.sleep(2)
+    page = state.get("origin_page", "main")
     try:
-        await confirmation.delete()
+        settings = await get_settings(gid)
+        if page == "main":
+            title = await _group_title(client, gid)
+            text = (
+                f"<b>⚙️ ɢʀᴏᴜᴘ sᴇᴛᴛɪɴɢs</b>\n\n"
+                f"<b>ɴᴀᴍᴇ:</b> {title}\n"
+                f"<b>ɪᴅ:</b> <code>{gid}</code>"
+            )
+            buttons = _main_settings_buttons(settings, gid)
+        else:
+            text = _page_text(page, settings)
+            buttons = _page_buttons(page, settings, gid)
+        await client.edit_message_text(
+            state["prompt_chat_id"],
+            state["prompt_message_id"],
+            text,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode=enums.ParseMode.HTML
+        )
     except Exception:
         pass
