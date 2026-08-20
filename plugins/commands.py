@@ -423,6 +423,7 @@ async def start(client: Client, message):
                 )
                 buttons = [
                     [InlineKeyboardButton("📎 ꜰɪʟᴇ", url=short_url)],
+                    [InlineKeyboardButton("ʜᴏᴡ ᴛᴏ ᴅᴏᴡɴʟᴏᴀᴅ ❓", url=settings.get("tutorial", TUTORIAL))],
                     [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
                 ]
                 await m.reply_text(f_caption, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
@@ -443,6 +444,7 @@ async def start(client: Client, message):
                     )
                     buttons = [
                         [InlineKeyboardButton("📎 ꜰɪʟᴇ", url=short_url)],
+                        [InlineKeyboardButton("ʜᴏᴡ ᴛᴏ ᴅᴏᴡɴʟᴏᴀᴅ ❓", url=settings.get("tutorial", TUTORIAL))],
                         [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
                     ]
                 else:
