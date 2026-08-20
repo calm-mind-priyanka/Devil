@@ -409,76 +409,100 @@ async def start(client: Client, message):
         user_verified = await db.is_user_verified(user_id)
         settings = await get_settings(grp_id)
         print(f"Id Settings - {settings}")
-        is_second_shortener = await db.use_second_shortener(
-            user_id, settings.get("verify_time", TWO_VERIFY_GAP)
+        verification_enabled = bool(settings.get("is_verify", IS_VERIFY))
+
+        # With Verification ON, File Mode Shortlink shows the File Mode message
+        # first and puts the generated shortlink behind the FILE button.
+        if verification_enabled and pre == "allfiles" and settings.get("file_mode", False) and settings.get("file_mode_type", "verify") == "shortlink":
+            files = temp.FILES_ID.get(file_id)
+            if files:
+                file = files[0]
+                f_caption = _file_mode_caption(settings, file, message.from_user.mention)
+                short_url = await get_shortlink(
+                    f"https://telegram.me/{temp.U_NAME}?start=allfilesmode_{grp_id}_{file_id}", grp_id
+                )
+                buttons = [
+                    [InlineKeyboardButton("📎 ꜰɪʟᴇ", url=short_url)],
+                    [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
+                ]
+                await m.reply_text(f_caption, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
+                return
+
+        # For a normal File Mode request, Verification is the master switch.
+        # Verification OFF means no shortlink is generated and the file falls
+        # through to the existing direct-delivery code below.
+        if verification_enabled and pre == "file" and settings.get("file_mode", False):
+            files_ = await get_file_details(file_id)
+            if files_:
+                file = files_[0]
+                f_caption = _file_mode_caption(settings, file, message.from_user.mention)
+                mode = settings.get("file_mode_type", "verify")
+                if mode == "shortlink":
+                    short_url = await get_shortlink(
+                        f"https://telegram.me/{temp.U_NAME}?start=filemode_{grp_id}_{file_id}", grp_id
+                    )
+                    buttons = [
+                        [InlineKeyboardButton("📎 ꜰɪʟᴇ", url=short_url)],
+                        [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
+                    ]
+                else:
+                    file_url = f"https://telegram.me/{temp.U_NAME}?start=file_{grp_id}_{file_id}"
+                    buttons = [
+                        [
+                            InlineKeyboardButton("📁 ꜰɪʟᴇ", url=file_url),
+                            InlineKeyboardButton("ʜᴏᴡ ᴛᴏ ᴠᴇʀɪғʏ ❓", url=settings.get("tutorial", TUTORIAL)),
+                        ],
+                        [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
+                    ]
+                await m.reply_text(f_caption, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
+                return
+
+        # Secondary/third shortener states are ignored completely when the
+        # master Verification switch is OFF.
+        is_second_shortener = (
+            await db.use_second_shortener(user_id, settings.get("verify_time", TWO_VERIFY_GAP))
+            if verification_enabled else False
         )
-        is_third_shortener = await db.use_third_shortener(
-            user_id, settings.get("third_verify_time", THREE_VERIFY_GAP)
+        is_third_shortener = (
+            await db.use_third_shortener(user_id, settings.get("third_verify_time", THREE_VERIFY_GAP))
+            if verification_enabled else False
         )
-        if (
-            settings.get("is_verify", IS_VERIFY)
-            and not user_verified
-            or is_second_shortener
-            or is_third_shortener
-        ):
-            verify_id = "".join(
-                random.choices(string.ascii_uppercase + string.digits, k=7)
-            )
+
+        if verification_enabled and ((not user_verified) or is_second_shortener or is_third_shortener):
+            verify_id = "".join(random.choices(string.ascii_uppercase + string.digits, k=7))
             await db.create_verify_id(user_id, verify_id)
             temp.CHAT[user_id] = grp_id
             if message.command[1].startswith("allfiles"):
                 verify = await get_shortlink(
                     f"https://telegram.me/{temp.U_NAME}?start=jisshu_{user_id}_{verify_id}_{file_id}",
-                    grp_id,
-                    is_second_shortener,
-                    is_third_shortener,
+                    grp_id, is_second_shortener, is_third_shortener,
                 )
             else:
                 verify = await get_shortlink(
                     f"https://telegram.me/{temp.U_NAME}?start=notcopy_{user_id}_{verify_id}_{file_id}",
-                    grp_id,
-                    is_second_shortener,
-                    is_third_shortener,
+                    grp_id, is_second_shortener, is_third_shortener,
                 )
             if is_third_shortener:
                 howtodownload = settings.get("tutorial_3", TUTORIAL_3)
             else:
-                howtodownload = (
-                    settings.get("tutorial_2", TUTORIAL_2)
-                    if is_second_shortener
-                    else settings.get("tutorial", TUTORIAL)
-                )
+                howtodownload = settings.get("tutorial_2", TUTORIAL_2) if is_second_shortener else settings.get("tutorial", TUTORIAL)
             buttons = [
-                [
-                    InlineKeyboardButton(text="✅ ᴠᴇʀɪꜰʏ ✅", url=verify),
-                    InlineKeyboardButton(text="ʜᴏᴡ ᴛᴏ ᴠᴇʀɪꜰʏ❓", url=howtodownload),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="😁 ʙᴜʏ sᴜʙsᴄʀɪᴘᴛɪᴏɴ - ɴᴏ ɴᴇᴇᴅ ᴛᴏ ᴠᴇʀɪғʏ 😁",
-                        callback_data="getpremium",
-                    ),
-                ],
+                [InlineKeyboardButton(text="✅ ᴠᴇʀɪꜰʏ ✅", url=verify), InlineKeyboardButton(text="ʜᴏᴡ ᴛᴏ ᴠᴇʀɪꜰʏ❓", url=howtodownload)],
+                [InlineKeyboardButton(text="😁 ʙᴜʏ sᴜʙsᴄʀɪᴘᴛɪᴏɴ - ɴᴏ ɴᴇᴇᴅ ᴛᴏ ᴠᴇʀɪғʏ 😁", callback_data="getpremium")],
             ]
             reply_markup = InlineKeyboardMarkup(buttons)
             if await db.user_verified(user_id):
                 msg = script.THIRDT_VERIFICATION_TEXT
             else:
-                msg = (
-                    script.SECOND_VERIFICATION_TEXT
-                    if is_second_shortener
-                    else script.VERIFICATION_TEXT
-                )
-            d = await m.reply_text(
-                text=msg.format(message.from_user.mention, get_status()),
-                protect_content=True,
-                reply_markup=reply_markup,
-                parse_mode=enums.ParseMode.HTML,
-            )
+                msg = script.SECOND_VERIFICATION_TEXT if is_second_shortener else script.VERIFICATION_TEXT
+            d = await m.reply_text(text=msg.format(message.from_user.mention, get_status()), protect_content=True, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
             await asyncio.sleep(300)
             await d.delete()
             await m.delete()
             return
+
+    if pre == "allfilesmode":
+        data = f"allfiles_{grp_id}_{file_id}"
 
     if data and data.startswith("allfiles"):
         _, grp_id, key = data.split("_", 2)
