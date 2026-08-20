@@ -411,53 +411,46 @@ async def start(client: Client, message):
         print(f"Id Settings - {settings}")
         verification_enabled = bool(settings.get("is_verify", IS_VERIFY))
 
-        # With Verification ON, File Mode Shortlink shows the File Mode message
-        # first and puts the generated shortlink behind the FILE button.
-        if verification_enabled and pre == "allfiles" and settings.get("file_mode", False) and settings.get("file_mode_type", "verify") == "shortlink":
-            files = temp.FILES_ID.get(file_id)
+        # File Mode SHORTLINK is handled separately.  VERIFY mode must NOT
+        # return here, because the normal verification flow below generates
+        # the real shortened verification URL (notcopy/jisshu).
+        if (
+            verification_enabled
+            and settings.get("file_mode", False)
+            and settings.get("file_mode_type", "verify") == "shortlink"
+            and pre in ("file", "allfiles")
+        ):
+            files = temp.FILES_ID.get(file_id) if pre == "allfiles" else None
+            if pre == "file":
+                files_ = await get_file_details(file_id)
+                files = files_ if files_ else None
+
             if files:
                 file = files[0]
                 f_caption = _file_mode_caption(settings, file, message.from_user.mention)
-                short_url = await get_shortlink(
-                    f"https://telegram.me/{temp.U_NAME}?start=allfilesmode_{grp_id}_{file_id}", grp_id
+                target = (
+                    f"https://telegram.me/{temp.U_NAME}?start=allfilesmode_{grp_id}_{file_id}"
+                    if pre == "allfiles"
+                    else f"https://telegram.me/{temp.U_NAME}?start=filemode_{grp_id}_{file_id}"
                 )
+                short_url = await get_shortlink(target, grp_id)
                 buttons = [
                     [InlineKeyboardButton("📎 ꜰɪʟᴇ", url=short_url)],
                     [InlineKeyboardButton("ʜᴏᴡ ᴛᴏ ᴅᴏᴡɴʟᴏᴀᴅ ❓", url=settings.get("tutorial", TUTORIAL))],
                     [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
                 ]
-                await m.reply_text(f_caption, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
+                await m.reply_text(
+                    f_caption,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode=enums.ParseMode.HTML,
+                )
                 return
 
-        # For a normal File Mode request, Verification is the master switch.
-        # Verification OFF means no shortlink is generated and the file falls
-        # through to the existing direct-delivery code below.
-        if verification_enabled and pre == "file" and settings.get("file_mode", False):
-            files_ = await get_file_details(file_id)
-            if files_:
-                file = files_[0]
-                f_caption = _file_mode_caption(settings, file, message.from_user.mention)
-                mode = settings.get("file_mode_type", "verify")
-                if mode == "shortlink":
-                    short_url = await get_shortlink(
-                        f"https://telegram.me/{temp.U_NAME}?start=filemode_{grp_id}_{file_id}", grp_id
-                    )
-                    buttons = [
-                        [InlineKeyboardButton("📎 ꜰɪʟᴇ", url=short_url)],
-                        [InlineKeyboardButton("ʜᴏᴡ ᴛᴏ ᴅᴏᴡɴʟᴏᴀᴅ ❓", url=settings.get("tutorial", TUTORIAL))],
-                        [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
-                    ]
-                else:
-                    file_url = f"https://telegram.me/{temp.U_NAME}?start=file_{grp_id}_{file_id}"
-                    buttons = [
-                        [
-                            InlineKeyboardButton("📁 ꜰɪʟᴇ", url=file_url),
-                            InlineKeyboardButton("ʜᴏᴡ ᴛᴏ ᴠᴇʀɪғʏ ❓", url=settings.get("tutorial", TUTORIAL)),
-                        ],
-                        [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
-                    ]
-                await m.reply_text(f_caption, reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML)
-                return
+        # IMPORTANT:
+        # VERIFY mode intentionally falls through to the common verification
+        # block below.  That block creates a shortened notcopy/jisshu URL and
+        # shows the "✅ ᴠᴇʀɪꜰʏ" URL button.  Do not replace it with a callback
+        # button such as callback_data="stream#...".
 
         # Secondary/third shortener states are ignored completely when the
         # master Verification switch is OFF.
