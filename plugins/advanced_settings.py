@@ -43,17 +43,14 @@ def _small(text):
     return str(text).translate(table)
 
 
-def _cancel_text():
-    return _small("/cancel - cancel this process.")
+def _cancel_link():
+    """Clickable Telegram /cancel command."""
+    return '<a href="tg://bot_command?command=cancel">/cancel</a>'
 
 
-def _cancel_button(group_id):
-    return [
-        InlineKeyboardButton(
-            "ᴄᴀɴᴄᴇʟ ❌",
-            callback_data=f"set_cancel#{group_id}"
-        )
-    ]
+def _cancel_prompt(text):
+    """Append the clickable /cancel command to an input prompt."""
+    return f"{text}\\n\\n{_cancel_link()} - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss."
 
 
 def _back(group_id, page="main"):
@@ -155,7 +152,7 @@ def _main_settings_buttons(settings, grp_id):
                 callback_data=f"set_page#fsub#{grp_id}"
             ),
             InlineKeyboardButton(
-                f"🔢 SET MAX RESULTS · {settings.get('max_results', MAX_BTN)}",
+                f"🔢 ꜱᴇᴛ ᴍᴀx ʀᴇꜱᴜʟᴛꜱ · {settings.get('max_results', MAX_BTN)}",
                 callback_data=f"set_page#max_results#{grp_id}"
             )
         ],
@@ -227,9 +224,10 @@ async def show_group_settings(client, target, grp_id):
     title = await _group_title(client, grp_id)
 
     text = (
-        f"<b>⚙️ ɢʀᴏᴜᴘ sᴇᴛᴛɪɴɢs</b>\n\n"
-        f"<b>ɴᴀᴍᴇ:</b> {title}\n"
-        f"<b>ɪᴅ:</b> <code>{grp_id}</code>"
+        f"🚸 <b>ɢʀᴏᴜᴘ - {title}</b>\n"
+        f"🆔️ <b>ɪᴅ - <code>{grp_id}</code></b>\n\n"
+        "sᴇʟᴇᴄᴛ ᴏɴᴇ ᴏꜰ ᴛʜᴇ sᴇᴛᴛɪɴɢs ᴛʜᴀᴛ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ᴄʜᴀɴɢᴇ "
+        "ᴀᴄᴄᴏʀᴅɪɴɢ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ..."
     )
     markup = InlineKeyboardMarkup(_main_settings_buttons(settings, int(grp_id)))
 
@@ -246,13 +244,25 @@ async def show_group_settings(client, target, grp_id):
 
 def _page_text(key, settings):
     if key == "auto_filter":
-        return "<b>📝 AUTO FILTER</b>\n\nAuto Filter searches indexed files for messages sent in the group."
+        state = "ᴏɴ ✅" if settings.get("auto_filter") else "ᴏꜰꜰ ❌"
+        return (
+            f"<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʏᴏᴜʀ ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ ᴍᴏᴅᴇ ᴍᴇᴀɴs "
+            f"ʙᴏᴛ sᴇɴᴅ ʀᴇsᴜʟᴛ ɪɴ ɢʀᴏᴜᴘ ᴏʀ ɴᴏᴛ...ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ - {state}</b>"
+        )
     if key == "file_secure":
-        return "<b>🔒 FILE SECURE</b>\n\nProtect delivered files from forwarding/saving where Telegram supports protect_content."
+        state = "ᴏɴ ✅" if settings.get("file_secure") else "ᴏꜰꜰ ❌"
+        return (
+            f"<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʏᴏᴜʀ ʙᴏᴛ ɢɪᴠᴇɴ ꜰɪʟᴇs ᴘʀᴏᴛᴇᴄᴛɪᴏɴ, "
+            f"ᴍᴇᴀɴs ᴡʜᴇᴛʜᴇʀ ᴜsᴇʀs ᴄᴀɴ ꜰᴏʀᴡᴀʀᴅ ʏᴏᴜʀ ꜰɪʟᴇ ᴏʀ ɴᴏᴛ...ᴘʀᴏᴛᴇᴄᴛ - {state}</b>"
+        )
     if key == "imdb":
         return f"<b>🎬 IMDB</b>\n\nPoster: {'ON ✅' if settings.get('imdb') else 'OFF ❌'}\n\n<code>{settings.get('template', IMDB_TEMPLATE)}</code>"
     if key == "spell_check":
-        return "<b>🔍 SPELL CHECK</b>\n\nCorrect common spelling variations before searching."
+        state = "ᴏɴ ✅" if settings.get("spell_check") else "ᴏꜰꜰ ❌"
+        return (
+            f"<b>ʜᴇʀᴇ ʏᴏᴜ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ʙᴏᴛ sᴘᴇʟʟɪɴɢ ᴄʜᴇᴄᴋ ᴍᴇssᴀɢᴇ"
+            f"sᴘᴇʟʟ ᴄʜᴇᴄᴋ - {state}</b>"
+        )
     if key == "auto_delete":
         return f"<b>🗑️ AUTO DELETE</b>\n\nEnabled: {'ON ✅' if settings.get('auto_delete') else 'OFF ❌'}\nDelete time: <code>{get_readable_time(settings.get('delete_time', DELETE_TIME))}</code>"
     if key == "link":
@@ -660,7 +670,21 @@ async def settings_callback(client, query):
             return await show_page(client, query, key, gid)
 
         if action == "set_input":
-            origin_page = ("shortlink_list" if key in {"shortner", "shortner_two", "shortner_three"} else ("verification_gap" if key in {"verify_time", "third_verify_time"} else ("tutorial" if key in {"tutorial", "tutorial_2", "tutorial_3"} else "main")))
+            origin_page_map = {
+                "delete_time": "auto_delete",
+                "template": "imdb",
+                "caption": "caption",
+                "max_results": "max_results",
+                "request_channel": "request_channel",
+                "fsub_add": "fsub",
+                "fsub_delete": "fsub",
+            }
+            origin_page = (
+                "shortlink_list" if key in {"shortner", "shortner_two", "shortner_three"}
+                else "verification_gap" if key in {"verify_time", "third_verify_time"}
+                else "tutorial" if key in {"tutorial", "tutorial_2", "tutorial_3"}
+                else origin_page_map.get(key, "main")
+            )
             state = _prompt_state(query, gid, key, origin_page)
             prompt = {
                 "delete_time": "sᴇɴᴅ ᴅᴇʟᴇᴛᴇ ᴛɪᴍᴇ ɪɴ sᴇᴄᴏɴᴅs.",
@@ -677,13 +701,21 @@ async def settings_callback(client, query):
 
             return await _edit_prompt(
                 client, state,
-                f"<b>{prompt}</b>\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
-                InlineKeyboardMarkup([_cancel_button(gid)])
+                _cancel_prompt(f"<b>{prompt}</b>")
             )
 
         if action == "set_cancel":
+            # Compatibility for old/stale keyboards only. New prompts use clickable /cancel text.
             PENDING.pop((query.from_user.id, gid), None)
-            return await show_group_settings(client, query, gid)
+            return await _edit_prompt(
+                client,
+                {
+                    "prompt_chat_id": query.message.chat.id,
+                    "prompt_message_id": query.message.id,
+                },
+                "ᴄᴀɴᴄᴇʟʟᴇᴅ ᴛʜɪs ᴘʀᴏᴄᴇss...",
+                InlineKeyboardMarkup([_back(gid, "main")])
+            )
 
         if action == "set_shortner":
             return await show_page(client, query, "shortener", gid, int(key))
@@ -695,8 +727,7 @@ async def settings_callback(client, query):
                 state = _prompt_state(query, gid, f"shortner_{number}_domain", "shortlink_list", number=number)
                 return await _edit_prompt(
                     client, state,
-                    "<b>ꜱᴇɴᴅ ᴍᴇ ꜱʜᴏʀᴛʟɪɴᴋ ᴜʀʟ ᴡɪᴛʜᴏᴜᴛ https ꜰᴏʀᴍᴀᴛ -</b>\n\n<code>https://tnshort.net</code> ❌\n<code>tnshort.net</code> ✅\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
-                    InlineKeyboardMarkup([_cancel_button(gid)])
+                    _cancel_prompt("<b>ꜱᴇɴᴅ ᴍᴇ ꜱʜᴏʀᴛʟɪɴᴋ ᴜʀʟ ᴡɪᴛʜᴏᴜᴛ https ꜰᴏʀᴍᴀᴛ -</b>\n\n<code>https://tnshort.net</code> ❌\n<code>tnshort.net</code> ✅")
                 )
 
             domain_key = {1: "shortner", 2: "shortner_two", 3: "shortner_three"}[number]
@@ -746,8 +777,7 @@ async def settings_callback(client, query):
             state = _prompt_state(query, gid, f"gap_{number}", "verification_gap", number=number)
             return await _edit_prompt(
                 client, state,
-                "<b>ꜱᴇɴᴅ ᴍᴇ ᴀ ᴛɪᴍᴇ ɪɴ ʟɪᴋᴇ ᴛʜɪs -</b> <code>1h</code> ᴏʀ <code>15m</code>\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
-                InlineKeyboardMarkup([_cancel_button(gid)])
+                _cancel_prompt("<b>ꜱᴇɴᴅ ᴍᴇ ᴀ ᴛɪᴍᴇ ɪɴ ʟɪᴋᴇ ᴛʜɪs -</b> <code>1h</code> ᴏʀ <code>15m</code>")
             )
 
     except Exception as exc:
@@ -768,39 +798,24 @@ async def advanced_cancel(client, message):
     PENDING.pop((uid, gid), None)
     page = state.get("origin_page", "main")
 
+    # Delete the user's /cancel command immediately.
     try:
         await message.delete()
     except Exception:
         pass
 
+    # Replace the active prompt with the cancelled state and a Back button
+    # that returns to the exact settings page where the input was started.
     try:
-        if page == "shortlink_list":
-            settings = await get_settings(gid)
-            await client.edit_message_text(
-                state["prompt_chat_id"], state["prompt_message_id"],
-                _shortlink_list_text(settings),
-                reply_markup=InlineKeyboardMarkup(_shortlink_list_buttons(gid)),
-                parse_mode=enums.ParseMode.HTML
-            )
-        elif page == "verification_gap":
-            settings = await get_settings(gid)
-            await client.edit_message_text(
-                state["prompt_chat_id"], state["prompt_message_id"],
-                _verification_gap_text(settings),
-                reply_markup=InlineKeyboardMarkup(_verification_gap_buttons(gid)),
-                parse_mode=enums.ParseMode.HTML
-            )
-        elif page != "main":
-            await client.edit_message_text(
-                state["prompt_chat_id"], state["prompt_message_id"],
-                _page_text(page, await get_settings(gid)),
-                reply_markup=InlineKeyboardMarkup(_page_buttons(page, await get_settings(gid), gid)),
-                parse_mode=enums.ParseMode.HTML
-            )
-        else:
-            await show_group_settings(client, message, gid)
+        await client.edit_message_text(
+            state["prompt_chat_id"],
+            state["prompt_message_id"],
+            "ᴄᴀɴᴄᴇʟʟᴇᴅ ᴛʜɪs ᴘʀᴏᴄᴇss...",
+            reply_markup=InlineKeyboardMarkup([_back(gid, page)]),
+            parse_mode=enums.ParseMode.HTML
+        )
     except Exception:
-        await message.reply_text("<b>ᴄᴀɴᴄᴇʟʟᴇᴅ ✅</b>")
+        pass
 
 
 @Client.on_message(filters.text)
@@ -833,16 +848,14 @@ async def advanced_input(client, message):
         if not re.fullmatch(r"[A-Za-z0-9.-]+(?::\d+)?", domain):
             return await _edit_prompt(
                 client, state,
-                "<b>❌ ɪɴᴠᴀʟɪᴅ ꜱʜᴏʀᴛʟɪɴᴋ ᴅᴏᴍᴀɪɴ.</b>\n\nꜱᴇɴᴅ ᴏɴʟʏ ᴛʜᴇ ᴅᴏᴍᴀɪɴ, ᴇxᴀᴍᴘʟᴇ: <code>tnshort.net</code>\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
-                InlineKeyboardMarkup([_cancel_button(gid)])
+                _cancel_prompt("<b>❌ ɪɴᴠᴀʟɪᴅ ꜱʜᴏʀᴛʟɪɴᴋ ᴅᴏᴍᴀɪɴ.</b>\n\nꜱᴇɴᴅ ᴏɴʟʏ ᴛʜᴇ ᴅᴏᴍᴀɪɴ, ᴇxᴀᴍᴘʟᴇ: <code>tnshort.net</code>")
             )
         state["type"] = f"shortner_{number}_api"
         state["domain"] = domain
         PENDING[(uid, gid)] = state
         return await _edit_prompt(
             client, state,
-            "<b>sᴇɴᴅ ᴍᴇ ᴀ sʜᴏʀᴛʟɪɴᴋ ᴀᴘɪ...</b>\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
-            InlineKeyboardMarkup([_cancel_button(gid)])
+            _cancel_prompt("<b>sᴇɴᴅ ᴍᴇ ᴀ sʜᴏʀᴛʟɪɴᴋ ᴀᴘɪ...</b>")
         )
 
     if key.startswith("shortner_") and key.endswith("_api"):
@@ -878,8 +891,7 @@ async def advanced_input(client, message):
         if seconds is None:
             return await _edit_prompt(
                 client, state,
-                "<b>❌ ᴘʟᴇᴀsᴇ sᴇɴᴅ ᴀ ᴠᴀʟɪᴅ ᴛɪᴍᴇ ʟɪᴋᴇ <code>1h</code> ᴏʀ <code>15m</code>.</b>\n\n<b>/ᴄᴀɴᴄᴇʟ</b> - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss.",
-                InlineKeyboardMarkup([_cancel_button(gid)])
+                _cancel_prompt("<b>❌ ᴘʟᴇᴀsᴇ sᴇɴᴅ ᴀ ᴠᴀʟɪᴅ ᴛɪᴍᴇ ʟɪᴋᴇ <code>1h</code> ᴏʀ <code>15m</code>.</b>")
             )
         setting_key = "verify_time" if number == 1 else "third_verify_time"
         await save_group_settings(gid, setting_key, seconds)
@@ -972,9 +984,10 @@ async def advanced_input(client, message):
         if page == "main":
             title = await _group_title(client, gid)
             text = (
-                f"<b>⚙️ ɢʀᴏᴜᴘ sᴇᴛᴛɪɴɢs</b>\n\n"
-                f"<b>ɴᴀᴍᴇ:</b> {title}\n"
-                f"<b>ɪᴅ:</b> <code>{gid}</code>"
+                f"🚸 <b>ɢʀᴏᴜᴘ - {title}</b>\n"
+                f"🆔️ <b>ɪᴅ - <code>{gid}</code></b>\n\n"
+                "sᴇʟᴇᴄᴛ ᴏɴᴇ ᴏꜰ ᴛʜᴇ sᴇᴛᴛɪɴɢs ᴛʜᴀᴛ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ᴄʜᴀɴɢᴇ "
+                "ᴀᴄᴄᴏʀᴅɪɴɢ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ..."
             )
             buttons = _main_settings_buttons(settings, gid)
         else:
