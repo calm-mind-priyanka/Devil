@@ -44,13 +44,15 @@ def _small(text):
 
 
 def _cancel_link():
-    """Clickable Telegram /cancel command."""
-    return '<a href="tg://bot_command?command=cancel">/cancel</a>'
+    """Return /cancel as a native Telegram bot-command link."""
+    # Keep this as plain /cancel text. Telegram automatically makes a
+    # registered bot command clickable and tapping it sends /cancel.
+    return "/cancel"
 
 
 def _cancel_prompt(text):
     """Append the clickable /cancel command to an input prompt."""
-    return f"{text}\\n\\n{_cancel_link()} - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss."
+    return f"{text}\n\n{_cancel_link()} - ᴄᴀɴᴄᴇʟ ᴛʜɪs ᴘʀᴏᴄᴇss."
 
 
 def _back(group_id, page="main"):
@@ -842,6 +844,12 @@ async def advanced_input(client, message):
 
     key = state["type"]
 
+    async def _delete_input_message():
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
     if key.startswith("shortner_") and key.endswith("_domain"):
         number = state["number"]
         domain = value.replace("https://", "").replace("http://", "").strip().rstrip("/")
@@ -850,6 +858,13 @@ async def advanced_input(client, message):
                 client, state,
                 _cancel_prompt("<b>❌ ɪɴᴠᴀʟɪᴅ ꜱʜᴏʀᴛʟɪɴᴋ ᴅᴏᴍᴀɪɴ.</b>\n\nꜱᴇɴᴅ ᴏɴʟʏ ᴛʜᴇ ᴅᴏᴍᴀɪɴ, ᴇxᴀᴍᴘʟᴇ: <code>tnshort.net</code>")
             )
+        # The domain was accepted. Remove the user's input so the settings
+        # conversation stays clean; the prompt message remains for the API step.
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
         state["type"] = f"shortner_{number}_api"
         state["domain"] = domain
         PENDING[(uid, gid)] = state
@@ -878,6 +893,7 @@ async def advanced_input(client, message):
         await save_group_settings(gid, domain_key, domain)
         await save_group_settings(gid, api_key, value)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
         ordinal = "1ꜱᴛ" if number == 1 else "2ɴᴅ" if number == 2 else "3ʀᴅ"
         return await _edit_prompt(
             client, state,
@@ -896,6 +912,7 @@ async def advanced_input(client, message):
         setting_key = "verify_time" if number == 1 else "third_verify_time"
         await save_group_settings(gid, setting_key, seconds)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
         return await _edit_prompt(
             client, state,
             f"<b>ᴛɪᴍᴇ {number} sᴇᴛ ꜱᴜᴄᴄᴇssꜰᴜʟʟʏ ✅</b>",
@@ -910,6 +927,7 @@ async def advanced_input(client, message):
             return await message.reply_text("Send a valid positive number of seconds or /cancel")
         await save_group_settings(gid, "delete_time", value_int)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
 
     elif key == "max_results":
         try:
@@ -919,28 +937,33 @@ async def advanced_input(client, message):
             return await message.reply_text("Max results must be between 1 and 20.")
         await save_group_settings(gid, "max_results", value_int)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
 
     elif key == "template":
         if any(x not in value for x in ("{search}", "{mention}", "{group}")):
             return await message.reply_text("Template must support {search}, {mention}, and {group}, or use /cancel.")
         await save_group_settings(gid, "template", value)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
 
     elif key == "caption":
         if "{file_name}" not in value:
             return await message.reply_text("Caption must contain {file_name}, or use /cancel.")
         await save_group_settings(gid, "caption", value)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
 
     elif key.startswith("tutorial"):
         if not (value.startswith("http://") or value.startswith("https://")):
             return await message.reply_text("Send a valid http/https URL or /cancel")
         await save_group_settings(gid, key, value)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
 
     elif key in {"shortner", "shortner_two", "shortner_three", "api", "api_two", "api_three", "verify_time", "third_verify_time"}:
         await save_group_settings(gid, key, value)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
 
     elif key == "request_channel":
         try:
@@ -949,6 +972,7 @@ async def advanced_input(client, message):
             return await message.reply_text("Send a valid channel ID or /cancel")
         await save_group_settings(gid, key, value_int)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
 
     elif key == "fsub_add":
         try:
@@ -961,6 +985,7 @@ async def advanced_input(client, message):
             channels.append(value_int)
         await save_group_settings(gid, "fsub_channels", channels)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
 
     elif key == "fsub_delete":
         try:
@@ -973,10 +998,12 @@ async def advanced_input(client, message):
             channels = [AUTH_CHANNEL]
         await save_group_settings(gid, "fsub_channels", channels)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
 
     else:
         await save_group_settings(gid, key, value)
         PENDING.pop((uid, gid), None)
+        await _delete_input_message()
 
     page = state.get("origin_page", "main")
     try:
