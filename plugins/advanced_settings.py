@@ -152,7 +152,7 @@ def _main_settings_buttons(settings, grp_id):
                 callback_data=f"set_page#fsub#{grp_id}"
             ),
             InlineKeyboardButton(
-                f"🔢 ꜱᴇᴛ ᴍᴀx ʀᴇꜱᴜʟᴛꜱ · {settings.get('max_results', MAX_BTN)}",
+                f"🔢 SET MAX RESULTS · {settings.get('max_results', MAX_BTN)}",
                 callback_data=f"set_page#max_results#{grp_id}"
             )
         ],
