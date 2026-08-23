@@ -97,7 +97,7 @@ async def start(client: Client, message):
         except (TypeError, ValueError):
             return await show_group_list(client, message)
         return await show_group_settings(client, message, grp_id)
-    if len(m.command) == 2 and m.command[1].startswith(("notcopy", "jisshu")):
+    if len(m.command) == 2 and m.command[1].startswith(("notcopy_", "jisshu_")):
         _, userid, verify_id, file_id = m.command[1].split("_", 3)
         user_id = int(userid)
         grp_id = temp.CHAT.get(user_id, 0)
@@ -132,11 +132,11 @@ async def start(client: Client, message):
             )
         if message.command[1].startswith("jisshu"):
             verifiedfiles = (
-                f"https://telegram.me/{temp.U_NAME}?start=verifiedallfiles_{grp_id}_{file_id}"
+                f"https://telegram.me/{temp.U_NAME}?start=allfiles_{grp_id}_{file_id}"
             )
         else:
             verifiedfiles = (
-                f"https://telegram.me/{temp.U_NAME}?start=verifiedfile_{grp_id}_{file_id}"
+                f"https://telegram.me/{temp.U_NAME}?start=file_{grp_id}_{file_id}"
             )
         await client.send_message(
             settings["log"],
@@ -341,10 +341,10 @@ async def start(client: Client, message):
     except:
         pre, grp_id, file_id = "", 0, data
 
-    # These prefixes mean the user has already completed the selected gate
-    # (shortlink or verification). The final file must use the normal caption
-    # and buttons, never the file-mode gate again.
-    file_gate_completed = pre in {"filemode", "allfilesmode", "verifiedfile", "verifiedallfiles"}
+    # filemode/allfilesmode are reached only after the user has completed the
+    # File Mode shortlink. They must bypass the verification gate and then be
+    # sent as normal files with the group's original caption/buttons.
+    file_mode_completed = pre in ("filemode", "allfilesmode")
 
     settings = await get_settings(int(data.split("_", 2)[1]))
     # Preserve the legacy fsub_id field while allowing the settings UI to manage
@@ -468,7 +468,7 @@ async def start(client: Client, message):
             if verification_enabled else False
         )
 
-        if verification_enabled and ((not user_verified) or is_second_shortener or is_third_shortener):
+        if (not file_mode_completed) and verification_enabled and ((not user_verified) or is_second_shortener or is_third_shortener):
             verify_id = "".join(random.choices(string.ascii_uppercase + string.digits, k=7))
             await db.create_verify_id(user_id, verify_id)
             temp.CHAT[user_id] = grp_id
@@ -501,10 +501,10 @@ async def start(client: Client, message):
             await m.delete()
             return
 
-    if pre in {"allfilesmode", "verifiedallfiles"}:
-        data = f"allfiles_{grp_id}_{file_id}"
-    elif pre == "verifiedfile":
+    if pre == "filemode":
         data = f"file_{grp_id}_{file_id}"
+    elif pre == "allfilesmode":
+        data = f"allfiles_{grp_id}_{file_id}"
 
     if data and data.startswith("allfiles"):
         _, grp_id, key = data.split("_", 2)
@@ -517,19 +517,18 @@ async def start(client: Client, message):
             user_id = message.from_user.id
             grp_id = temp.CHAT.get(user_id)
             settings = await get_settings(grp_id)
-            if settings.get("file_mode", False) and not file_gate_completed:
-                f_caption = _file_mode_caption(settings, file, message.from_user.mention)
-                reply_markup = _file_mode_markup(settings, file.file_id)
-            else:
-                CAPTION = settings["caption"]
-                f_caption = CAPTION.format(
-                    file_name=formate_file_name(file.file_name),
-                    file_size=get_size(file.file_size),
-                    file_caption=file.caption,
-                )
-                reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(
-                    "✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f"stream#{file.file_id}"
-                )]])
+            # File Mode is only the access gate. Once the user reaches this
+            # delivery path, always restore the group's original caption and
+            # normal direct-file button.
+            CAPTION = settings["caption"]
+            f_caption = CAPTION.format(
+                file_name=formate_file_name(file.file_name),
+                file_size=get_size(file.file_size),
+                file_caption=file.caption,
+            )
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(
+                "✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f"stream#{file.file_id}"
+            )]])
             toDel = await client.send_cached_media(
                 chat_id=message.from_user.id,
                 file_id=file.file_id,
@@ -576,19 +575,17 @@ async def start(client: Client, message):
         return await message.reply("<b>⚠️ ᴀʟʟ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>")
     files = files_[0]
     settings = await get_settings(grp_id)
-    if settings.get("file_mode", False) and not file_gate_completed:
-        f_caption = _file_mode_caption(settings, files, message.from_user.mention)
-        reply_markup = _file_mode_markup(settings, file_id)
-    else:
-        CAPTION = settings["caption"]
-        f_caption = CAPTION.format(
-            file_name=formate_file_name(files.file_name),
-            file_size=get_size(files.file_size),
-            file_caption=files.caption,
-        )
-        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(
-            "✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f"stream#{file_id}"
-        )]])
+    # This is the final delivery stage, so File Mode must never be rendered
+    # again here. File Mode is only used before access is granted.
+    CAPTION = settings["caption"]
+    f_caption = CAPTION.format(
+        file_name=formate_file_name(files.file_name),
+        file_size=get_size(files.file_size),
+        file_caption=files.caption,
+    )
+    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "✛ ᴡᴀᴛᴄʜ & ᴅᴏᴡɴʟᴏᴀᴅ ✛", callback_data=f"stream#{file_id}"
+    )]])
     toDel = await client.send_cached_media(
         chat_id=message.from_user.id,
         file_id=file_id,
