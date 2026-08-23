@@ -333,7 +333,7 @@ async def next_page(bot, query):
         InlineKeyboardButton("ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"languages#{key}#{offset}#{req}"),
     ])
     btn.append([InlineKeyboardButton("ꜱᴇᴀsᴏɴ", callback_data=f"seasons#{key}#{offset}#{req}")])
-    btn.append([InlineKeyboardButton("📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}")])
+    btn.append([InlineKeyboardButton("sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}")])
     if n_offset == 0:
 
         btn.append(
@@ -506,7 +506,7 @@ async def season_search(client: Client, query: CallbackQuery):
         0,
         [
             InlineKeyboardButton(
-                "📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}"
+                "sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}"
             ),
         ],
     )
@@ -686,7 +686,7 @@ async def year_search(client: Client, query: CallbackQuery):
         0,
         [
             InlineKeyboardButton(
-                "📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}"
+                "sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}"
             ),
         ],
     )
@@ -865,7 +865,7 @@ async def quality_search(client: Client, query: CallbackQuery):
         0,
         [
             InlineKeyboardButton(
-                "📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}"
+                "sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}"
             ),
         ],
     )
@@ -1057,7 +1057,7 @@ async def lang_search(client: Client, query: CallbackQuery):
         0,
         [
             InlineKeyboardButton(
-                "📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}"
+                "sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}"
             ),
         ],
     )
