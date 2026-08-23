@@ -230,6 +230,13 @@ User - {}"""
 
 ɴᴏᴡ ʏᴏᴜ ʜᴀᴠᴇ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇss ꜰᴏʀ ɴᴇxᴛ ꜰᴜʟʟ ᴅᴀʏ </b>"""
 
+
+    # SHORTLINK mode uses the same progress/state as VERIFY mode, but has its
+    # own message constants so the UI clearly shows the 1/3, 2/3 and 3/3 steps.
+    SHORTLINK_VERIFICATION_TEXT = VERIFICATION_TEXT
+    SHORTLINK_SECOND_VERIFICATION_TEXT = SECOND_VERIFICATION_TEXT
+    SHORTLINK_THIRD_VERIFICATION_TEXT = THIRDT_VERIFICATION_TEXT
+
     VERIFIED_LOG_TEXT = """<b><u>☄ є∂ιтн ᴜsᴇʀ ᴠᴇʀɪꜰɪᴇᴅ sᴜᴄᴄᴇssꜰᴜʟʟʏ ☄</u>
 
 ⚡️ ɴᴀᴍᴇ:- {} [ <code>{}</code> ] 
