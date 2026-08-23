@@ -416,46 +416,15 @@ async def start(client: Client, message):
         print(f"Id Settings - {settings}")
         verification_enabled = bool(settings.get("is_verify", IS_VERIFY))
 
-        # File Mode SHORTLINK is handled separately.  VERIFY mode must NOT
-        # return here, because the normal verification flow below generates
-        # the real shortened verification URL (notcopy/jisshu).
-        if (
-            verification_enabled
-            and settings.get("file_mode", False)
-            and settings.get("file_mode_type", "verify") == "shortlink"
-            and pre in ("file", "allfiles")
-        ):
-            files = temp.FILES_ID.get(file_id) if pre == "allfiles" else None
-            if pre == "file":
-                files_ = await get_file_details(file_id)
-                files = files_ if files_ else None
-
-            if files:
-                file = files[0]
-                f_caption = _file_mode_caption(settings, file, message.from_user.mention)
-                target = (
-                    f"https://telegram.me/{temp.U_NAME}?start=allfilesmode_{grp_id}_{file_id}"
-                    if pre == "allfiles"
-                    else f"https://telegram.me/{temp.U_NAME}?start=filemode_{grp_id}_{file_id}"
-                )
-                short_url = await get_shortlink(target, grp_id)
-                buttons = [
-                    [InlineKeyboardButton("📎 ꜰɪʟᴇ", url=short_url)],
-                    [InlineKeyboardButton("ʜᴏᴡ ᴛᴏ ᴅᴏᴡɴʟᴏᴀᴅ ❓", url=settings.get("tutorial", TUTORIAL))],
-                    [InlineKeyboardButton("💎 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ", callback_data="getpremium")],
-                ]
-                await m.reply_text(
-                    f_caption,
-                    reply_markup=InlineKeyboardMarkup(buttons),
-                    parse_mode=enums.ParseMode.HTML,
-                )
-                return
+        # File Mode VERIFY and SHORTLINK use the SAME verification state.
+        # The selected file mode must never reset the user's 1/3 -> 2/3 -> 3/3
+        # progress or bypass the existing verification-gap logic.
 
         # IMPORTANT:
-        # VERIFY mode intentionally falls through to the common verification
-        # block below.  That block creates a shortened notcopy/jisshu URL and
-        # shows the "✅ ᴠᴇʀɪꜰʏ" URL button.  Do not replace it with a callback
-        # button such as callback_data="stream#...".
+        # Both VERIFY and SHORTLINK modes intentionally use this same
+        # verification block. The mode changes only the presentation; the
+        # user's verification state and the existing 1st/2nd/3rd gap logic
+        # remain shared.
 
         # Secondary/third shortener states are ignored completely when the
         # master Verification switch is OFF.
@@ -486,12 +455,27 @@ async def start(client: Client, message):
                 howtodownload = settings.get("tutorial_3", TUTORIAL_3)
             else:
                 howtodownload = settings.get("tutorial_2", TUTORIAL_2) if is_second_shortener else settings.get("tutorial", TUTORIAL)
+            shortlink_mode = (
+                settings.get("file_mode", False)
+                and settings.get("file_mode_type", "verify") == "shortlink"
+            )
+            verify_button_text = "🔗 ɢᴇᴛ ꜱʜᴏʀᴛʟɪɴᴋ 🔗" if shortlink_mode else "✅ ᴠᴇʀɪꜰʏ ✅"
+            how_button_text = "ʜᴏᴡ ᴛᴏ ᴅᴏᴡɴʟᴏᴀᴅ ❓" if shortlink_mode else "ʜᴏᴡ ᴛᴏ ᴠᴇʀɪꜰʏ❓"
             buttons = [
-                [InlineKeyboardButton(text="✅ ᴠᴇʀɪꜰʏ ✅", url=verify), InlineKeyboardButton(text="ʜᴏᴡ ᴛᴏ ᴠᴇʀɪꜰʏ❓", url=howtodownload)],
+                [InlineKeyboardButton(text=verify_button_text, url=verify), InlineKeyboardButton(text=how_button_text, url=howtodownload)],
                 [InlineKeyboardButton(text="😁 ʙᴜʏ sᴜʙsᴄʀɪᴘᴛɪᴏɴ - ɴᴏ ɴᴇᴇᴅ ᴛᴏ ᴠᴇʀɪғʏ 😁", callback_data="getpremium")],
             ]
             reply_markup = InlineKeyboardMarkup(buttons)
-            if await db.user_verified(user_id):
+            if shortlink_mode:
+                if await db.user_verified(user_id):
+                    msg = script.SHORTLINK_THIRD_VERIFICATION_TEXT
+                else:
+                    msg = (
+                        script.SHORTLINK_SECOND_VERIFICATION_TEXT
+                        if is_second_shortener
+                        else script.SHORTLINK_VERIFICATION_TEXT
+                    )
+            elif await db.user_verified(user_id):
                 msg = script.THIRDT_VERIFICATION_TEXT
             else:
                 msg = script.SECOND_VERIFICATION_TEXT if is_second_shortener else script.VERIFICATION_TEXT
