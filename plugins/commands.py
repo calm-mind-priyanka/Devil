@@ -479,7 +479,34 @@ async def start(client: Client, message):
                 msg = script.THIRDT_VERIFICATION_TEXT
             else:
                 msg = script.SECOND_VERIFICATION_TEXT if is_second_shortener else script.VERIFICATION_TEXT
-            d = await m.reply_text(text=msg.format(message.from_user.mention, get_status()), protect_content=True, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+            if shortlink_mode:
+                # Shortlink mode shows the same dynamic movie/file information
+                # as the File Mode caption, while keeping the Shortlink 1/3 →
+                # 2/3 → 3/3 progress section. VERIFY mode is unchanged.
+                shortlink_file = (await get_file_details(file_id) or [None])[0]
+                if shortlink_file:
+                    d = await m.reply_text(
+                        text=msg.format(
+                            message.from_user.mention,
+                            _file_mode_greeting(),
+                            formate_file_name(shortlink_file.file_name),
+                            get_size(shortlink_file.file_size),
+                        ),
+                        protect_content=True, reply_markup=reply_markup,
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                else:
+                    d = await m.reply_text(
+                        text=msg.format(message.from_user.mention, _file_mode_greeting(), "File", "N/A"),
+                        protect_content=True, reply_markup=reply_markup,
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+            else:
+                d = await m.reply_text(
+                    text=msg.format(message.from_user.mention, get_status()),
+                    protect_content=True, reply_markup=reply_markup,
+                    parse_mode=enums.ParseMode.HTML,
+                )
             await asyncio.sleep(300)
             await d.delete()
             await m.delete()
