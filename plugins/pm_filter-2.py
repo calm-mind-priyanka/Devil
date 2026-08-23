@@ -333,7 +333,7 @@ async def next_page(bot, query):
         InlineKeyboardButton("ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"languages#{key}#{offset}#{req}"),
     ])
     btn.append([InlineKeyboardButton("ꜱᴇᴀsᴏɴ", callback_data=f"seasons#{key}#{offset}#{req}")])
-    btn.append([InlineKeyboardButton("sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}")])
+    btn.append([InlineKeyboardButton("📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}")])
     if n_offset == 0:
 
         btn.append(
@@ -506,7 +506,7 @@ async def season_search(client: Client, query: CallbackQuery):
         0,
         [
             InlineKeyboardButton(
-                "sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}"
+                "📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}"
             ),
         ],
     )
@@ -686,7 +686,7 @@ async def year_search(client: Client, query: CallbackQuery):
         0,
         [
             InlineKeyboardButton(
-                "sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}"
+                "📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}"
             ),
         ],
     )
@@ -865,7 +865,7 @@ async def quality_search(client: Client, query: CallbackQuery):
         0,
         [
             InlineKeyboardButton(
-                "sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}"
+                "📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}"
             ),
         ],
     )
@@ -1057,7 +1057,7 @@ async def lang_search(client: Client, query: CallbackQuery):
         0,
         [
             InlineKeyboardButton(
-                "sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}"
+                "📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}"
             ),
         ],
     )
@@ -2140,8 +2140,8 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
         req = message.from_user.id if message.from_user else 0
         # Filters and Send All come after the file results, before pagination.
         btn.append([
-            InlineKeyboardButton("ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"languages#{key}#{offset}#{req}"),
             InlineKeyboardButton("ǫᴜᴀʟɪᴛʏ", callback_data=f"qualities#{key}#{offset}#{req}"),
+            InlineKeyboardButton("ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"languages#{key}#{offset}#{req}"),
         ])
         btn.append([InlineKeyboardButton("ꜱᴇᴀsᴏɴ", callback_data=f"seasons#{key}#{offset}#{req}")])
         btn.append([InlineKeyboardButton("📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}")])
@@ -2162,8 +2162,8 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
             offset = max_results
     else:
         btn.append([
-            InlineKeyboardButton("ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"languages#{key}#{offset}#{req}"),
             InlineKeyboardButton("ǫᴜᴀʟɪᴛʏ", callback_data=f"qualities#{key}#{offset}#{req}"),
+            InlineKeyboardButton("ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"languages#{key}#{offset}#{req}"),
         ])
         btn.append([InlineKeyboardButton("ꜱᴇᴀsᴏɴ", callback_data=f"seasons#{key}#{offset}#{req}")])
         btn.append([InlineKeyboardButton("📥 sᴇɴᴅ ᴀʟʟ ғɪʟᴇs 📥", callback_data=f"send_all#{key}")])
