@@ -231,11 +231,64 @@ User - {}"""
 ɴᴏᴡ ʏᴏᴜ ʜᴀᴠᴇ ᴜɴʟɪᴍɪᴛᴇᴅ ᴀᴄᴄᴇss ꜰᴏʀ ɴᴇxᴛ ꜰᴜʟʟ ᴅᴀʏ </b>"""
 
 
-    # SHORTLINK mode uses the same progress/state as VERIFY mode, but has its
-    # own message constants so the UI clearly shows the 1/3, 2/3 and 3/3 steps.
-    SHORTLINK_VERIFICATION_TEXT = VERIFICATION_TEXT
-    SHORTLINK_SECOND_VERIFICATION_TEXT = SECOND_VERIFICATION_TEXT
-    SHORTLINK_THIRD_VERIFICATION_TEXT = THIRDT_VERIFICATION_TEXT
+    # SHORTLINK mode keeps the actual movie/file caption information, but uses
+    # a separate, more polished progress message. VERIFY mode remains unchanged.
+    SHORTLINK_VERIFICATION_TEXT = """<b>👋 ɢᴏᴏᴅ {1}, {0}!</b>
+
+╭━━━━━━━━━━━━━━━━━━╮
+│ 🎬 <b>ғɪʟᴇ ʀᴇᴀᴅʏ</b>
+╰━━━━━━━━━━━━━━━━━━╯
+
+📁 <b>{2}</b>
+📦 <b>sɪᴢᴇ:</b> {3}
+
+🔗 <b>ʏᴏᴜʀ ғɪʟᴇ ɪs ʀᴇᴀᴅʏ.</b>
+ᴄᴏᴍᴘʟᴇᴛᴇ ᴛʜᴇ sᴛᴇᴘ ʙᴇʟᴏᴡ ᴛᴏ ᴜɴʟᴏᴄᴋ ɪᴛ.
+
+╭──────────────────╮
+│ 🔐 <b>sʜᴏʀᴛʟɪɴᴋ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ</b>
+│ 📊 <b>ᴘʀᴏɢʀᴇss:</b> 🟢 <b>1 / 3</b>
+╰──────────────────╯
+
+🔹 <b>sᴛᴇᴘ 1:</b> ᴄᴏᴍᴘʟᴇᴛᴇ ᴛʜᴇ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ʙᴇʟᴏᴡ.</b>"""
+
+    SHORTLINK_SECOND_VERIFICATION_TEXT = """<b>👋 ɢᴏᴏᴅ {1}, {0}!</b>
+
+╭━━━━━━━━━━━━━━━━━━╮
+│ 🎬 <b>ғɪʟᴇ ʀᴇᴀᴅʏ</b>
+╰━━━━━━━━━━━━━━━━━━╯
+
+📁 <b>{2}</b>
+📦 <b>sɪᴢᴇ:</b> {3}
+
+🔗 <b>ʏᴏᴜʀ ғɪʟᴇ ɪs ʀᴇᴀᴅʏ.</b>
+ᴏɴᴇ sᴛᴇᴘ ɪs ᴄᴏᴍᴘʟᴇᴛᴇᴅ — ᴄᴏɴᴛɪɴᴜᴇ ᴡɪᴛʜ ᴛʜᴇ ɴᴇxᴛ sᴛᴇᴘ.
+
+╭──────────────────╮
+│ 🔐 <b>sʜᴏʀᴛʟɪɴᴋ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ</b>
+│ 📊 <b>ᴘʀᴏɢʀᴇss:</b> 🟡 <b>2 / 3</b>
+╰──────────────────╯
+
+🔹 <b>sᴛᴇᴘ 2:</b> ᴄᴏᴍᴘʟᴇᴛᴇ ᴛʜᴇ ɴᴇxᴛ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ᴛᴏ ᴄᴏɴᴛɪɴᴜᴇ.</b>"""
+
+    SHORTLINK_THIRD_VERIFICATION_TEXT = """<b>👋 ɢᴏᴏᴅ {1}, {0}!</b>
+
+╭━━━━━━━━━━━━━━━━━━╮
+│ 🎬 <b>ғɪʟᴇ ʀᴇᴀᴅʏ</b>
+╰━━━━━━━━━━━━━━━━━━╯
+
+📁 <b>{2}</b>
+📦 <b>sɪᴢᴇ:</b> {3}
+
+🔗 <b>ʏᴏᴜʀ ғɪʟᴇ ɪs ʀᴇᴀᴅʏ.</b>
+ᴛʜɪs ɪs ᴛʜᴇ ғɪɴᴀʟ sᴛᴇᴘ ᴛᴏ ᴜɴʟᴏᴄᴋ ʏᴏᴜʀ ғɪʟᴇ.
+
+╭──────────────────╮
+│ 🔐 <b>sʜᴏʀᴛʟɪɴᴋ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ</b>
+│ 📊 <b>ᴘʀᴏɢʀᴇss:</b> 🔴 <b>3 / 3</b>
+╰──────────────────╯
+
+🔹 <b>sᴛᴇᴘ 3:</b> ᴄᴏᴍᴘʟᴇᴛᴇ ᴛʜᴇ ғɪɴᴀʟ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ᴛᴏ ᴜɴʟᴏᴄᴋ ᴛʜᴇ ғɪʟᴇ.</b>"""
 
     VERIFIED_LOG_TEXT = """<b><u>☄ є∂ιтн ᴜsᴇʀ ᴠᴇʀɪꜰɪᴇᴅ sᴜᴄᴄᴇssꜰᴜʟʟʏ ☄</u>
 
