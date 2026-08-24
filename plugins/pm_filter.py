@@ -535,7 +535,7 @@ async def season_search(client: Client, query: CallbackQuery):
 
     if n_offset == "":
         btn.append(
-            [InlineKeyboardButton(text="🚸 ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇs 🚸", callback_data="buttons")]
+            [InlineKeyboardButton(text="↭ ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇꜱ ᴀᴠᴀɪʟᴀʙʟᴇ ↭", callback_data="buttons")]
         )
     elif n_offset == 0:
         btn.append(
@@ -717,7 +717,7 @@ async def year_search(client: Client, query: CallbackQuery):
 
     if n_offset == "":
         btn.append(
-            [InlineKeyboardButton(text="🚸 ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇs 🚸", callback_data="buttons")]
+            [InlineKeyboardButton(text="↭ ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇꜱ ᴀᴠᴀɪʟᴀʙʟᴇ ↭", callback_data="buttons")]
         )
     elif n_offset == 0:
         btn.append(
@@ -895,7 +895,7 @@ async def quality_search(client: Client, query: CallbackQuery):
     )
     if n_offset == "":
         btn.append(
-            [InlineKeyboardButton(text="🚸 ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇs 🚸", callback_data="buttons")]
+            [InlineKeyboardButton(text="↭ ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇꜱ ᴀᴠᴀɪʟᴀʙʟᴇ ↭", callback_data="buttons")]
         )
     elif n_offset == 0:
         btn.append(
@@ -1087,7 +1087,7 @@ async def lang_search(client: Client, query: CallbackQuery):
     )
     if n_offset == "":
         btn.append(
-            [InlineKeyboardButton(text="🚸 ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇs 🚸", callback_data="buttons")]
+            [InlineKeyboardButton(text="↭ ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇꜱ ᴀᴠᴀɪʟᴀʙʟᴇ ↭", callback_data="buttons")]
         )
     elif n_offset == 0:
         btn.append(
@@ -2178,7 +2178,7 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
         ])
         btn.append([InlineKeyboardButton("ꜱᴇᴀsᴏɴ", callback_data=f"seasons#{key}#{offset}#{req}")])
         btn.append([InlineKeyboardButton("sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}")])
-        btn.append([InlineKeyboardButton("🚸 ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇs 🚸", user_id=ADMINS[0])])
+        btn.append([InlineKeyboardButton("↭ ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇꜱ ᴀᴠᴀɪʟᴀʙʟᴇ ↭", user_id=ADMINS[0])])
     imdb = (
         await get_poster(search, file=(files[0]).file_name)
         if settings["imdb"]
