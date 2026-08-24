@@ -100,7 +100,7 @@ def _main_settings_buttons(settings, grp_id):
         ],
         [
             InlineKeyboardButton(
-                f"🎬 ɪᴍᴅʙ",
+                f"🈵 ɪᴍᴅʙ",
                 callback_data=f"set_page#imdb#{grp_id}"
             ),
             InlineKeyboardButton(
@@ -124,17 +124,17 @@ def _main_settings_buttons(settings, grp_id):
                 callback_data=f"set_page#file_mode#{grp_id}"
             ),
             InlineKeyboardButton(
-                "📝 ꜰɪʟᴇs ᴄᴀᴘᴛɪᴏɴs",
+                "📑 ꜰɪʟᴇs ᴄᴀᴘᴛɪᴏɴs",
                 callback_data=f"set_page#caption#{grp_id}"
             )
         ],
         [
             InlineKeyboardButton(
-                "🎬 ᴛᴜᴛᴏʀɪᴀʟ ʟɪɴᴋ",
+                "🥁 ᴛᴜᴛᴏʀɪᴀʟ ʟɪɴᴋ",
                 callback_data=f"set_page#tutorial#{grp_id}"
             ),
             InlineKeyboardButton(
-                "🖇️ ꜱʜᴏʀᴛʟɪɴᴋs",
+                "🖇️ sᴇᴛ sʜᴏʀᴛʟɪɴᴋ",
                 callback_data=f"set_page#shortlink#{grp_id}"
             )
         ],
@@ -154,7 +154,7 @@ def _main_settings_buttons(settings, grp_id):
                 callback_data=f"set_page#fsub#{grp_id}"
             ),
             InlineKeyboardButton(
-                f"🔢 ꜱᴇᴛ ᴍᴀx ʀᴇꜱᴜʟᴛꜱ · {settings.get('max_results', MAX_BTN)}",
+                f"ℹ️ ꜱᴇᴛ ᴍᴀx ʀᴇꜱᴜʟᴛꜱ · {settings.get('max_results', MAX_BTN)}",
                 callback_data=f"set_page#max_results#{grp_id}"
             )
         ],
