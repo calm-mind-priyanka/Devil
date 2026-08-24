@@ -307,7 +307,7 @@ async def next_page(bot, query):
     )
     settings = await get_settings(await _group_id_for_query(query))
     del_msg = (
-        f"<blockquote>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇᴅ ᴀꜰᴛᴇʀ <code>{get_readable_time(int(settings.get('delete_time', DELETE_TIME)))}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs 🗑</blockquote>"
+        f"\n\n<blockquote>⚠️ <b>ᴛʜɪꜱ ᴍᴇꜱꜱᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇᴅ ᴀꜰᴛᴇʀ <code>{get_readable_time(int(settings.get('delete_time', DELETE_TIME)))}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪꜱꜱᴜᴇs 🗑</b></blockquote>"
         if settings["auto_delete"]
         else ""
     )
@@ -2116,7 +2116,7 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
         max_results = int(MAX_BTN)
     MAX_RESULTS[key] = max_results
     del_msg = (
-        f"<blockquote>⚠️ ᴛʜɪs ᴍᴇssᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇᴅ ᴀꜰᴛᴇʀ <code>{get_readable_time(int(settings.get('delete_time', DELETE_TIME)))}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪssᴜᴇs 🗑</blockquote>"
+        f"\n\n<blockquote>⚠️ <b>ᴛʜɪꜱ ᴍᴇꜱꜱᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇᴅ ᴀꜰᴛᴇʀ <code>{get_readable_time(int(settings.get('delete_time', DELETE_TIME)))}</code> ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ɪꜱꜱᴜᴇs 🗑</b></blockquote>"
         if settings["auto_delete"]
         else ""
     )
