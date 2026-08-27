@@ -524,10 +524,17 @@ async def start(client: Client, message):
             await message.reply_text("<b>⚠️ ᴀʟʟ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>")
             return
         files_to_delete = []
+        delete_delay = None
+        auto_delete_enabled = False
         for file in files:
             user_id = message.from_user.id
             grp_id = temp.CHAT.get(user_id)
             settings = await get_settings(grp_id)
+            auto_delete_enabled = bool(settings.get("auto_delete", False))
+            try:
+                delete_delay = max(1, int(settings.get("delete_time", FILE_AUTO_DEL_TIMER)))
+            except (TypeError, ValueError):
+                delete_delay = max(1, int(FILE_AUTO_DEL_TIMER))
             # File Mode is only the access gate. Once the user reaches this
             # delivery path, always restore the group's original caption and
             # normal direct-file button.
@@ -552,16 +559,16 @@ async def start(client: Client, message):
         delCap = "<i>ᴀʟʟ {} ꜰɪʟᴇꜱ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀꜰᴛᴇʀ {} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</i>".format(
             len(files_to_delete),
             (
-                f"{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs"
-                if FILE_AUTO_DEL_TIMER >= 60
+                f"{delete_delay / 60} ᴍɪɴᴜᴛᴇs"
+                if delete_delay >= 60
                 else f"{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs"
             ),
         )
         afterDelCap = "<i>ᴀʟʟ {} ꜰɪʟᴇꜱ ᴀʀᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀꜰᴛᴇʀ {} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</i>".format(
             len(files_to_delete),
             (
-                f"{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs"
-                if FILE_AUTO_DEL_TIMER >= 60
+                f"{delete_delay / 60} ᴍɪɴᴜᴛᴇs"
+                if delete_delay >= 60
                 else f"{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs"
             ),
         )
@@ -586,6 +593,11 @@ async def start(client: Client, message):
         return await message.reply("<b>⚠️ ᴀʟʟ ꜰɪʟᴇs ɴᴏᴛ ꜰᴏᴜɴᴅ ⚠️</b>")
     files = files_[0]
     settings = await get_settings(grp_id)
+    auto_delete_enabled = bool(settings.get("auto_delete", False))
+    try:
+        delete_delay = max(1, int(settings.get("delete_time", FILE_AUTO_DEL_TIMER)))
+    except (TypeError, ValueError):
+        delete_delay = max(1, int(FILE_AUTO_DEL_TIMER))
     # This is the final delivery stage, so File Mode must never be rendered
     # again here. File Mode is only used before access is granted.
     CAPTION = settings["caption"]
@@ -605,21 +617,32 @@ async def start(client: Client, message):
         reply_markup=reply_markup,
     )
     delCap = "<i>ʏᴏᴜʀ ꜰɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</i>".format(
-        f"{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs"
-        if FILE_AUTO_DEL_TIMER >= 60
+        f"{delete_delay / 60} ᴍɪɴᴜᴛᴇs"
+        if delete_delay >= 60
         else f"{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs"
     )
     afterDelCap = (
         "<i>ʏᴏᴜʀ ꜰɪʟᴇ ɪs ᴅᴇʟᴇᴛᴇᴅ ᴀғᴛᴇʀ {} ᴛᴏ ᴀᴠᴏɪᴅ ᴄᴏᴘʏʀɪɢʜᴛ ᴠɪᴏʟᴀᴛɪᴏɴs!</i>".format(
-            f"{FILE_AUTO_DEL_TIMER / 60} ᴍɪɴᴜᴛᴇs"
-            if FILE_AUTO_DEL_TIMER >= 60
+            f"{delete_delay / 60} ᴍɪɴᴜᴛᴇs"
+            if delete_delay >= 60
             else f"{FILE_AUTO_DEL_TIMER} sᴇᴄᴏɴᴅs"
         )
     )
+    if not auto_delete_enabled:
+        return
     replyed = await message.reply(delCap, reply_to_message_id=toDel.id)
-    await asyncio.sleep(FILE_AUTO_DEL_TIMER)
-    await toDel.delete()
-    return await replyed.edit(afterDelCap)
+    async def _delete_file_after():
+        await asyncio.sleep(delete_delay)
+        try:
+            await toDel.delete()
+        except Exception:
+            pass
+        try:
+            await replyed.edit(afterDelCap)
+        except Exception:
+            pass
+    asyncio.create_task(_delete_file_after())
+    return
 
 
 @Client.on_message(filters.command("delete"))
