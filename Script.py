@@ -353,12 +353,6 @@ User - {}"""
     
 <blockquote>🎖️ᴀᴠᴀɪʟᴀʙʟᴇ ᴘʀᴇᴍɪᴜᴍ ᴘʟᴀɴꜱ :</blockquote>
 
-❏ ₹023   ➠   01 WEEK  
-❏ ₹059   ➠   01 MONTH 🔥  
-❏ ₹149   ➠   03 MONTH   
-❏ ₹269   ➠   06 MONTH  
-❏ ₹499   ➠   12 MONTH 💰
-❏ ₹999   ➠   LIFE TIME + VIP SUPPORT
 
 🆔 ᴜᴘɪ ɪᴅ ➩ <code>lamasandeep821@okicici</code> [ᴛᴀᴘ ᴛᴏ ᴄᴏᴘʏ]
  
