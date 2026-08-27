@@ -25,12 +25,17 @@ PORT = environ.get("PORT", "8082")
 # Premium payment bot (optional second Telegram bot used only for screenshots).
 # Create a separate BotFather bot and put its token in PAYMENT_BOT_TOKEN.
 PAYMENT_BOT_TOKEN = environ.get("PAYMENT_BOT_TOKEN", "")
-PAYMENT_BOT_USERNAME = environ.get("PAYMENT_BOT_USERNAME", "@Sandydeveloper_bot").lstrip("@")
+PAYMENT_BOT_USERNAME = environ.get("PAYMENT_BOT_USERNAME", "").lstrip("@")
 # Space-separated Telegram numeric IDs allowed to use payment/premium admin commands.
 PAYMENT_ADMIN_IDS = [
-    int(admin) for admin in environ.get("PAYMENT_ADMIN_IDS", "6046055058").split()
+    int(admin) for admin in environ.get("PAYMENT_ADMIN_IDS", "").split()
     if admin.lstrip("-").isdigit()
 ]
+PAYMENT_OCR_ENABLED = is_enabled(environ.get("PAYMENT_OCR_ENABLED", "True"), True)
+# OCR uses the screenshot transaction time only as a plausibility check. It is
+# deliberately not treated as proof of a genuine payment.
+PAYMENT_MAX_DELAY_HOURS = float(environ.get("PAYMENT_MAX_DELAY_HOURS", "48"))
+PAYMENT_FUTURE_TOLERANCE_MINUTES = int(environ.get("PAYMENT_FUTURE_TOLERANCE_MINUTES", "15"))
 # Keep the existing Premium plans/prices. Prices are strings so currency formatting
 # is preserved exactly as configured.
 PREMIUM_PLANS = {
