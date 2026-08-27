@@ -6,11 +6,14 @@ existing users collection and db.has_premium_access/remove_premium_access.
 import asyncio
 import datetime
 import logging
+import re
 from html import escape
 
 import pytz
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from PIL import Image, ImageOps, ImageFilter
+import pytesseract
 
 from info import (
     ADMINS,
@@ -19,6 +22,9 @@ from info import (
     PAYMENT_BOT_USERNAME,
     PAYMENT_ADMIN_IDS,
     PREMIUM_PLANS,
+    PAYMENT_OCR_ENABLED,
+    PAYMENT_MAX_DELAY_HOURS,
+    PAYMENT_FUTURE_TOLERANCE_MINUTES,
     API_ID,
     API_HASH,
 )
@@ -88,6 +94,163 @@ def _remaining_label(expires_at):
     hours, rem = divmod(rem, 3600)
     minutes, seconds = divmod(rem, 60)
     return f"{days}d {hours}h {minutes}m {seconds}s"
+
+
+
+def _money_number(value):
+    """Turn ₹023 / INR 23.00 / Rs. 23 into numeric rupees."""
+    if value is None:
+        return None
+    m = re.search(r"(\d+(?:[.,]\d{1,2})?)", str(value).replace(",", ""))
+    if not m:
+        return None
+    try:
+        return round(float(m.group(1).replace(",", "")), 2)
+    except ValueError:
+        return None
+
+
+def _expected_amount(plan_price):
+    return _money_number(plan_price)
+
+
+def _extract_amount(text, expected):
+    """Find a likely paid amount, preferring currency/amount-labelled values."""
+    if not text:
+        return None
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    patterns = [
+        r"(?:₹|rs\.?|inr)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)",
+        r"(?:amount|paid|sent|received|debited|credited|total)\D{0,18}([0-9][0-9,]*(?:\.[0-9]{1,2})?)",
+    ]
+    candidates = []
+    for line in lines:
+        for pattern in patterns:
+            for match in re.finditer(pattern, line, flags=re.I):
+                value = _money_number(match.group(1))
+                if value is not None:
+                    candidates.append(value)
+    if not candidates:
+        # OCR sometimes drops ₹/INR. Only inspect short numeric lines rather than
+        # transaction IDs, timestamps, or phone numbers.
+        for line in lines:
+            if re.search(r"\b(?:amount|paid|sent|received|debited|credited|total)\b", line, re.I):
+                nums = re.findall(r"\b\d{1,6}(?:\.\d{1,2})?\b", line)
+                candidates.extend(_money_number(n) for n in nums)
+    candidates = [x for x in candidates if x is not None and x < 10000000]
+    if not candidates:
+        return None
+    if expected is not None:
+        return min(candidates, key=lambda x: abs(x - expected))
+    return candidates[0]
+
+
+def _parse_transaction_datetime(text, reference):
+    """Extract a transaction date/time from common Indian payment screenshot formats."""
+    if not text:
+        return None
+    cleaned = re.sub(r"\s+", " ", text)
+    date_patterns = [
+        r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b",
+        r"\b(\d{1,2})\.(\d{1,2})\.(\d{2,4})\b",
+    ]
+    date_value = None
+    for pat in date_patterns:
+        m = re.search(pat, cleaned)
+        if m:
+            d, mo, y = map(int, m.groups())
+            if y < 100:
+                y += 2000
+            try:
+                date_value = datetime.datetime(y, mo, d)
+                break
+            except ValueError:
+                pass
+
+    time_value = None
+    m = re.search(r"\b(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?\b", cleaned, re.I)
+    if m:
+        hour, minute = int(m.group(1)), int(m.group(2))
+        second = int(m.group(3) or 0)
+        meridiem = (m.group(4) or "").upper()
+        if meridiem:
+            if hour == 12:
+                hour = 0
+            if meridiem == "PM":
+                hour += 12
+        if 0 <= hour <= 23 and minute <= 59 and second <= 59:
+            time_value = datetime.time(hour, minute, second)
+
+    if date_value is None and time_value is None:
+        return None
+    if date_value is None:
+        date_value = reference.replace(hour=0, minute=0, second=0, microsecond=0)
+    if time_value is None:
+        return date_value
+    return datetime.datetime.combine(date_value.date(), time_value)
+
+
+def _payment_match_result(order, ocr_text, received_at):
+    expected = _expected_amount(order.get("plan_price"))
+    found = _extract_amount(ocr_text, expected)
+    amount_match = found is not None and expected is not None and abs(found - expected) < 0.01
+
+    tx_dt = _parse_transaction_datetime(ocr_text, received_at)
+    time_match = False
+    time_note = "Transaction date/time could not be read."
+    if tx_dt:
+        # OCR sees the payment screenshot in the usual Indian local time.
+        # Convert that local timestamp to the same naive-UTC convention used
+        # by the existing MongoDB records before comparing it.
+        tx_dt = IST.localize(tx_dt).astimezone(UTC).replace(tzinfo=None)
+        lower = _naive_utc(order.get("order_created_at")) or received_at
+        upper = received_at + datetime.timedelta(minutes=PAYMENT_FUTURE_TOLERANCE_MINUTES)
+        # Allow payment after order creation, with a small pre-order OCR/time drift.
+        lower = lower - datetime.timedelta(minutes=PAYMENT_FUTURE_TOLERANCE_MINUTES)
+        max_delay = datetime.timedelta(hours=PAYMENT_MAX_DELAY_HOURS)
+        time_match = lower <= tx_dt <= min(upper, lower + max_delay + datetime.timedelta(minutes=PAYMENT_FUTURE_TOLERANCE_MINUTES))
+        time_note = f"Transaction time: {_fmt_dt(tx_dt)}"
+
+    if not PAYMENT_OCR_ENABLED:
+        return True, {
+            "ocr_status": "disabled",
+            "amount_found": found,
+            "amount_match": None,
+            "transaction_at": tx_dt,
+            "time_match": None,
+            "time_note": "OCR checks disabled; sender/order matching used.",
+        }
+
+    passed = amount_match and time_match
+    return passed, {
+        "ocr_status": "matched" if passed else "manual_review",
+        "amount_found": found,
+        "amount_match": amount_match,
+        "transaction_at": tx_dt,
+        "time_match": time_match,
+        "time_note": time_note,
+    }
+
+
+async def _ocr_payment_message(payment_client, message):
+    if not PAYMENT_OCR_ENABLED:
+        return "", "disabled"
+    try:
+        raw = await payment_client.download_media(message, in_memory=True)
+        if raw is None:
+            return "", "download_failed"
+        raw.seek(0)
+        image = Image.open(raw).convert("RGB")
+        image = ImageOps.exif_transpose(image)
+        image.thumbnail((2200, 2200))
+        gray = ImageOps.grayscale(image)
+        gray = ImageOps.autocontrast(gray)
+        gray = gray.filter(ImageFilter.SHARPEN)
+        text = pytesseract.image_to_string(gray, config="--psm 6", timeout=10)
+        return text or "", "ok"
+    except Exception:
+        LOGGER.exception("Payment screenshot OCR failed.")
+        return "", "ocr_failed"
 
 
 async def _activate_order(client, order, screenshot_message_id):
@@ -171,15 +334,13 @@ async def _activate_order(client, order, screenshot_message_id):
 
 
 async def process_payment_submission(payment_client, message):
-    """Handle a photo/image sent to the dedicated payment bot."""
+    """Handle a screenshot, verify sender/order and perform a soft OCR check."""
     sender = message.from_user
     if not sender:
         return
 
     user_id = int(sender.id)
     received_at = _now()
-
-    # Store every submission first, including unmatched submissions.
     media_kind = "photo" if message.photo else "document"
     file_id = None
     file_unique_id = None
@@ -191,7 +352,6 @@ async def process_payment_submission(payment_client, message):
         file_unique_id = message.document.file_unique_id
 
     order = await db.get_pending_premium_order(user_id)
-
     submission = {
         "user_id": user_id,
         "username": sender.username or "",
@@ -225,18 +385,60 @@ async def process_payment_submission(payment_client, message):
             pass
         return
 
-    # Claim only the waiting order. A second screenshot cannot activate it twice.
+    ocr_text, ocr_status = await _ocr_payment_message(payment_client, message)
+    passed, check = _payment_match_result(order, ocr_text, received_at)
+    await db.update_payment_submission(
+        user_id,
+        message.id,
+        {
+            "ocr_status": check["ocr_status"],
+            "ocr_text": ocr_text[:4000],
+            "amount_found": check["amount_found"],
+            "amount_match": check["amount_match"],
+            "transaction_at": check["transaction_at"],
+            "time_match": check["time_match"],
+            "ocr_engine_status": ocr_status,
+        },
+    )
+
+    if not passed:
+        await db.update_order_payment_review(user_id, message.id, check)
+        reason = []
+        if check["amount_match"] is False:
+            reason.append(f"amount mismatch (expected {order.get('plan_price')}, found {check['amount_found'] or 'unknown'})")
+        elif check["amount_match"] is None:
+            reason.append("amount could not be read")
+        if check["time_match"] is False:
+            reason.append("transaction time/date is outside the allowed window")
+        elif check["time_match"] is None:
+            reason.append("transaction time/date could not be read")
+        reason_text = "; ".join(reason) or "OCR could not confidently match the payment details"
+        await _notify_admins(
+            payment_client,
+            "🟡 <b>Payment screenshot needs manual review</b>\n\n"
+            f"👤 User ID: <code>{user_id}</code>\n"
+            f"📦 Plan: {escape(order.get('plan_duration', 'N/A'))}\n"
+            f"💰 Expected: {escape(order.get('plan_price', 'N/A'))}\n"
+            f"🆔 Screenshot message: <code>{message.id}</code>\n"
+            f"⚠️ Reason: {escape(reason_text)}\n\n"
+            "Premium was <b>not</b> activated automatically."
+        )
+        try:
+            await message.reply_text(
+                "🟡 Screenshot received. We could not confidently match the payment amount/time, "
+                "so it has been sent for manual verification."
+            )
+        except Exception:
+            pass
+        return
+
     claimed = await db.activate_premium_order(user_id, message.id)
     if not claimed:
-        # It was already processed by another update; retain this submission
-        # as a duplicate for manual review.
-        await db.payment_submissions.update_one(
-            {"user_id": user_id, "payment_bot_message_id": int(message.id)},
-            {"$set": {"status": "duplicate_after_activation"}},
+        await db.update_payment_submission(
+            user_id, message.id, {"status": "duplicate_after_activation"}
         )
         return
 
-    # Preserve a reviewable copy in the existing log channel when possible.
     try:
         await payment_client.copy_message(
             chat_id=LOG_CHANNEL,
@@ -312,12 +514,13 @@ async def pending_payments(client, message):
         return await message.reply_text("You are not authorized to use this command.")
 
     rows = []
-    async for order in await db.get_pending_manual_verifications():
+    async for order in db.get_pending_manual_verifications():
         rows.append(
             f"👤 <code>{order['user_id']}</code> | "
             f"{escape(order.get('username') or 'no username')}\n"
             f"📦 {escape(order.get('plan_duration', 'N/A'))} | "
             f"💰 {escape(order.get('plan_price', 'N/A'))}\n"
+            f"💳 Status: <code>{escape(order.get('payment_status', 'N/A'))}</code>\n"
             f"🖼️ Screenshot: <code>{order.get('screenshot_message_id', 'N/A')}</code>\n"
             f"⏳ Expires: {_fmt_dt(order.get('expires_at'))}\n"
         )
