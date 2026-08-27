@@ -49,6 +49,23 @@ CAP = {}
 MAX_RESULTS = {}
 
 
+async def _delete_after(message, seconds: int, request_message=None):
+    """Delete result and request in the background using the saved group delay."""
+    try:
+        await asyncio.sleep(max(1, int(seconds)))
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        if request_message is not None:
+            try:
+                await request_message.delete()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def _delete_time_text(seconds: int) -> str:
     """Format auto-delete time for the warning using normal words."""
     seconds = max(0, int(seconds))
@@ -2265,12 +2282,9 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
                     reply_markup=InlineKeyboardMarkup(btn),
                 )
                 #  await delSticker(st)
-                await asyncio.sleep(int(settings.get("delete_time", DELETE_TIME)))
-                await k.delete()
-                try:
-                    await message.delete()
-                except:
-                    pass
+                asyncio.create_task(
+                    _delete_after(k, int(settings.get("delete_time", DELETE_TIME)), message)
+                )
             else:
                 await message.reply_photo(
                     photo=imdb.get("poster"),
@@ -2288,12 +2302,9 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
                     reply_markup=InlineKeyboardMarkup(btn),
                 )
                 # await delSticker(st)
-                await asyncio.sleep(int(settings.get("delete_time", DELETE_TIME)))
-                await k.delete()
-                try:
-                    await message.delete()
-                except:
-                    pass
+                asyncio.create_task(
+                    _delete_after(k, int(settings.get("delete_time", DELETE_TIME)), message)
+                )
             else:
                 await message.reply_photo(
                     photo=poster,
@@ -2314,12 +2325,9 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
                     )
                 except Exception as e:
                     print("error", e)
-                await asyncio.sleep(int(settings.get("delete_time", DELETE_TIME)))
-                await k.delete()
-                try:
-                    await message.delete()
-                except:
-                    pass
+                asyncio.create_task(
+                    _delete_after(k, int(settings.get("delete_time", DELETE_TIME)), message)
+                )
             else:
                 await message.reply_text(
                     cap + links + del_msg + js_ads,
@@ -2338,12 +2346,9 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
         # await delSticker(st)
         if settings["auto_delete"]:
             #  await delSticker(st)
-            await asyncio.sleep(int(settings.get("delete_time", DELETE_TIME)))
-            await k.delete()
-            try:
-                await message.delete()
-            except:
-                pass
+            asyncio.create_task(
+                _delete_after(k, int(settings.get("delete_time", DELETE_TIME)), message)
+            )
     return
 
 
