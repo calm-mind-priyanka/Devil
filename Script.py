@@ -391,6 +391,12 @@ User - {}"""
 -------------User Premium------------
 ➩ /add_premium {user ID} {Times} - Add a premium user
 ➩ /remove_premium {user ID} - Remove a premium user
+➩ /pending - Pending screenshot payments
+➩ /premium {user ID} - Premium/payment details
+➩ /approve {user ID} - Mark payment manually verified
+➩ /remove {user ID} - Immediately remove Premium
+➩ /expire - Run expiry checker now
+➩ /renew {user ID} {plan} - Manually renew Premium
 ➩ /add_redeem - Generate a redeem code
 ➩ /premium_users - List all premium users
 ➩ /refresh - Refresh free trial for users
