@@ -28,7 +28,7 @@ PAYMENT_BOT_TOKEN = environ.get("PAYMENT_BOT_TOKEN", "")
 PAYMENT_BOT_USERNAME = environ.get("PAYMENT_BOT_USERNAME", "").lstrip("@")
 # Space-separated Telegram numeric IDs allowed to use payment/premium admin commands.
 PAYMENT_ADMIN_IDS = [
-    int(admin) for admin in environ.get("PAYMENT_ADMIN_IDS", "").split()
+    int(admin) for admin in environ.get("PAYMENT_ADMIN_IDS", "6046055058").split()
     if admin.lstrip("-").isdigit()
 ]
 # Keep the existing Premium plans/prices. Prices are strings so currency formatting
