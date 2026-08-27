@@ -468,6 +468,27 @@ class Database:
             {"$set": data},
         )
 
+    async def claim_payment_review(self, user_id, message_id, decision):
+        """Atomically claim one exact screenshot review. Independent of order status."""
+        now = datetime.datetime.utcnow()
+        return await self.payment_submissions.update_one(
+            {
+                "user_id": int(user_id),
+                "payment_bot_message_id": int(message_id),
+                "review_status": {"$in": ["pending", "manual_review_required"]},
+            },
+            {"$set": {
+                "review_status": decision,
+                "reviewed_at": now,
+            }},
+        )
+
+    async def get_payment_submission(self, user_id, message_id):
+        return await self.payment_submissions.find_one({
+            "user_id": int(user_id),
+            "payment_bot_message_id": int(message_id),
+        })
+
     async def update_order_payment_review(self, user_id, message_id, check):
         return await self.premium_orders.update_one(
             {"user_id": int(user_id), "payment_status": "waiting_for_payment"},
@@ -538,14 +559,17 @@ class Database:
             }},
         )
 
-    async def approve_manual_payment(self, user_id):
-        """Mark a manual-review payment approved without depending on a command."""
+    async def approve_manual_payment(self, user_id, screenshot_message_id=None):
+        """Atomically approve only the exact screenshot currently awaiting manual review."""
         now = datetime.datetime.utcnow()
+        query = {
+            "user_id": int(user_id),
+            "payment_status": {"$in": ["manual_review_required", "pending_manual_verification"]},
+        }
+        if screenshot_message_id is not None:
+            query["screenshot_message_id"] = int(screenshot_message_id)
         return await self.premium_orders.update_one(
-            {
-                "user_id": int(user_id),
-                "payment_status": {"$in": ["manual_review_required", "pending_manual_verification"]},
-            },
+            query,
             {"$set": {
                 "payment_status": "manually_verified",
                 "manually_verified": True,
@@ -553,13 +577,16 @@ class Database:
             }},
         )
 
-    async def reject_manual_payment(self, user_id):
-        """Reject a payment that is waiting for manual verification."""
+    async def reject_manual_payment(self, user_id, screenshot_message_id=None):
+        """Atomically reject only the exact screenshot currently awaiting manual review."""
+        query = {
+            "user_id": int(user_id),
+            "payment_status": {"$in": ["manual_review_required", "pending_manual_verification"]},
+        }
+        if screenshot_message_id is not None:
+            query["screenshot_message_id"] = int(screenshot_message_id)
         return await self.premium_orders.update_one(
-            {
-                "user_id": int(user_id),
-                "payment_status": {"$in": ["manual_review_required", "pending_manual_verification"]},
-            },
+            query,
             {"$set": {
                 "payment_status": "manually_rejected",
                 "premium_status": "inactive",
