@@ -1473,7 +1473,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             [
                 InlineKeyboardButton(
                     "☆📸 ꜱᴇɴᴅ ꜱᴄʀᴇᴇɴsʜᴏᴛ ᴛᴏ ᴏᴡɴᴇʀ 📸☆",
-                    url=f"https://telegram.me/{OWNER_USERNAME}",
+                    url=f"https://telegram.me/{PAYMENT_BOT_Jisshu-filter-bot}",
                 )
             ],
             [InlineKeyboardButton("💎 ᴄᴜꜱᴛᴏᴍ ᴘʟᴀɴ 💎", callback_data="other")],
@@ -1576,7 +1576,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         buttons = [
             [
                 InlineKeyboardButton(
-                    "ʀᴇᴘᴏ", url="https://github.com/JisshuTG/Jisshu-filter-bot"
+                    "ʀᴇᴘᴏ", url="@Sandymaiwait"
                 )
             ],
             [
