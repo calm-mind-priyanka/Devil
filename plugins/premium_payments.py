@@ -827,14 +827,14 @@ def register_payment_bot_handlers(payment_client):
             return await query.answer("This payment screenshot was not found.", show_alert=True)
 
         if action == "payapprove":
-            result = await db.claim_payment_review(user_id, screenshot_message_id, "approved")
+            # Lock this exact screenshot while activation is running. Do NOT mark
+            # it approved until Premium access and the user notification succeed.
+            result = await db.claim_payment_review(user_id, screenshot_message_id, "processing")
             if not result.modified_count:
-                status = (submission.get("review_status") or "processed").replace("_", " ")
-                return await query.answer(f"This screenshot was already {status}.", show_alert=True)
+                current = await db.get_payment_submission(user_id, screenshot_message_id)
+                status = ((current or {}).get("review_status") or "processed").replace("_", " ")
+                return await query.answer(f"This screenshot is already {status}.", show_alert=True)
 
-            # Approve the exact screenshot first, then atomically activate the
-            # matching pending order. If no matching order exists, revert the
-            # review state to pending so the admin is never locked out.
             order = await db.get_premium_order(user_id)
             if not order or int(order.get("screenshot_message_id") or -1) != screenshot_message_id:
                 await db.update_payment_submission(
@@ -842,20 +842,44 @@ def register_payment_bot_handlers(payment_client):
                 )
                 return await query.answer("The matching payment order changed. Review was kept pending.", show_alert=True)
 
-            result = await db.approve_manual_payment(user_id, screenshot_message_id)
-            if not result.modified_count:
+            # The exact screenshot must still belong to a pending manual-review
+            # order. Activate Premium first; only then finalize the review as approved.
+            approved = await db.approve_manual_payment(user_id, screenshot_message_id)
+            if not approved.modified_count:
                 await db.update_payment_submission(
                     user_id, screenshot_message_id, {"review_status": "manual_review_required"}
                 )
                 return await query.answer("The order could not be approved. Review is still pending.", show_alert=True)
 
-            order = await db.get_premium_order(user_id)
-            await _activate_order(client, order, screenshot_message_id)
-            await db.update_payment_submission(user_id, screenshot_message_id, {"review_status": "approved"})
+            try:
+                order = await db.get_premium_order(user_id)
+                if not order:
+                    raise RuntimeError("Premium order disappeared during approval")
+                await _activate_order(client, order, screenshot_message_id)
+            except Exception as exc:
+                LOGGER.exception("Manual Premium activation failed for %s", user_id)
+                # Never leave a review falsely approved when activation failed.
+                await db.premium_orders.update_one(
+                    {"user_id": user_id, "screenshot_message_id": screenshot_message_id},
+                    {"$set": {
+                        "payment_status": "manual_review_required",
+                        "premium_status": "inactive",
+                    }},
+                )
+                await db.update_payment_submission(
+                    user_id, screenshot_message_id,
+                    {"review_status": "manual_review_required", "approval_error": str(exc)[:500]},
+                )
+                return await query.answer("Premium activation failed. Review was restored to pending.", show_alert=True)
+
+            await db.update_payment_submission(
+                user_id, screenshot_message_id,
+                {"review_status": "approved", "approval_error": None},
+            )
             text = (
                 f"✅ <b>Payment approved</b>\n\n"
                 f"User ID: <code>{user_id}</code>\n"
-                "Premium has been activated."
+                "Premium has been activated successfully."
             )
         else:
             result = await db.claim_payment_review(user_id, screenshot_message_id, "rejected")
