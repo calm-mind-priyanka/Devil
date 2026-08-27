@@ -163,3 +163,29 @@ python3 bot.py
 <h1> <img src="https://files.catbox.moe/eps9v4.jpg" width="70px" style="border-radius: 50%"> ᴄᴏɴᴛᴀᴄᴛ ᴍᴇ </h1>
   
 [<img src="https://raw.githubusercontent.com/AnonymousX1025/AnonymousX1025/master/resources/telegram_icon.png" width="60px">](https://telegram.im/@JISSHU_BOTS) [<img src="https://raw.githubusercontent.com/AnonymousX1025/AnonymousX1025/master/resources/github_icon.png" width="60px">](https://github.com/JisshuTG) [<img src="https://raw.githubusercontent.com/AnonymousX1025/AnonymousX1025/master/resources/youtube_icon.png" width="60px">](https://www.youtube.com/@JISSHU-BOTS) [<img src="https://github.com/AnonymousX1025/AnonymousX1025/blob/master/resources/insta_icon.png" width="60px">](https://www.instagram.com/jhaplustar?igsh=MW9neHowNWo1Ymt6NA==)
+
+
+## Premium payment screenshot system
+
+The existing Premium system remains based on the `users` MongoDB collection. The
+new payment layer adds `premium_orders` and `payment_submissions` collections
+and uses Telegram User ID as the stable identifier.
+
+Set these environment variables when enabling the separate payment bot:
+
+- `PAYMENT_BOT_TOKEN` — token from BotFather for the dedicated screenshot bot.
+- `PAYMENT_BOT_USERNAME` — username of that payment bot, without `@`, so the
+  main bot can create a "send screenshot" button.
+- `PAYMENT_ADMIN_IDS` — optional space-separated Telegram numeric IDs allowed
+  to use the new payment administration commands. Existing `ADMINS` are also
+  authorized.
+
+The payment bot must be a different bot from `BOT_TOKEN`. Users first select a
+Premium plan in the main bot, then send their screenshot to the payment bot.
+A screenshot never proves that a payment is genuine: it only triggers
+temporary Premium activation with `pending_manual_verification`. Admins can
+later use `/pending`, `/premium USER_ID`, `/approve USER_ID`, `/remove USER_ID`,
+`/expire`, and `/renew USER_ID PLAN`.
+
+Supported plan keys for `/renew` are `week`, `month`, `3month`, `6month`,
+`year`, and `lifetime`.
