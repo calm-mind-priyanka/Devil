@@ -413,8 +413,7 @@ async def process_payment_submission(payment_client, message):
         elif check["time_match"] is None:
             reason.append("transaction time/date could not be read")
         reason_text = "; ".join(reason) or "OCR could not confidently match the payment details"
-        await _notify_admins(
-            payment_client,
+        review_text = (
             "🟡 <b>Payment screenshot needs manual review</b>\n\n"
             f"👤 User ID: <code>{user_id}</code>\n"
             f"📦 Plan: {escape(order.get('plan_duration', 'N/A'))}\n"
@@ -423,6 +422,27 @@ async def process_payment_submission(payment_client, message):
             f"⚠️ Reason: {escape(reason_text)}\n\n"
             "Premium was <b>not</b> activated automatically."
         )
+        review_buttons = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ APPROVE PAYMENT", callback_data=f"payapprove:{user_id}"),
+                InlineKeyboardButton("❌ REJECT PAYMENT", callback_data=f"payreject:{user_id}"),
+            ]
+        ])
+        for admin_id in _admins():
+            try:
+                await payment_client.send_message(
+                    admin_id,
+                    review_text,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=review_buttons,
+                )
+                await payment_client.copy_message(
+                    admin_id,
+                    message.chat.id,
+                    message.id,
+                )
+            except Exception as exc:
+                LOGGER.warning("Could not send manual payment review to %s: %s", admin_id, exc)
         try:
             await message.reply_text(
                 "🟡 Screenshot received. We could not confidently match the payment amount/time, "
@@ -780,6 +800,59 @@ async def premium_expiry_worker(client):
 
 
 def register_payment_bot_handlers(payment_client):
+    @payment_client.on_callback_query(filters.regex(r"^pay(approve|reject):"))
+    async def manual_payment_review_callback(client, query):
+        if not query.from_user or query.from_user.id not in _admins():
+            return await query.answer("You are not authorized.", show_alert=True)
+
+        action, raw_user_id = query.data.split(":", 1)
+        try:
+            user_id = int(raw_user_id)
+        except ValueError:
+            return await query.answer("Invalid payment request.", show_alert=True)
+
+        order = await db.get_premium_order(user_id)
+        if not order:
+            return await query.answer("Payment record was not found.", show_alert=True)
+
+        if action == "payapprove":
+            result = await db.approve_manual_payment(user_id)
+            if not result.modified_count:
+                return await query.answer("This payment was already processed.", show_alert=True)
+            order = await db.get_premium_order(user_id)
+            await _activate_order(client, order, order.get("screenshot_message_id"))
+            text = (
+                f"✅ <b>Payment approved</b>\n\n"
+                f"User ID: <code>{user_id}</code>\n"
+                "Premium has been activated."
+            )
+        else:
+            result = await db.reject_manual_payment(user_id)
+            if not result.modified_count:
+                return await query.answer("This payment was already processed.", show_alert=True)
+            try:
+                await client.send_message(
+                    user_id,
+                    "❌ <b>Your payment screenshot was rejected after manual review.</b>\n"
+                    "Please contact the admin if you think this is a mistake.",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            except Exception:
+                pass
+            text = (
+                f"❌ <b>Payment rejected</b>\n\n"
+                f"User ID: <code>{user_id}</code>"
+            )
+
+        await query.answer("Payment review completed.")
+        try:
+            await query.message.edit_text(
+                text,
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception:
+            pass
+
     @payment_client.on_message(
         filters.private & (filters.photo | filters.document)
     )
