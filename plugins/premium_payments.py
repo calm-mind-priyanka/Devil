@@ -254,9 +254,32 @@ async def _ocr_payment_message(payment_client, message):
 
 
 async def _activate_order(client, order, screenshot_message_id):
-    """Grant existing Premium access from a claimed payment order."""
+    """Grant Premium using the exact plan stored on the payment order.
+
+    Older orders may contain a display name (for example ``01 WEEK``) instead
+    of the internal plan key (``week``), so resolve both forms before touching
+    the user or order. This prevents manual approval from falsely failing.
+    """
     user_id = int(order["user_id"])
     now = _now()
+
+    raw_plan = str(order.get("selected_plan") or "").strip()
+    plan_key = _plan_key(raw_plan)
+    if not plan_key:
+        raw_lower = raw_plan.lower()
+        for key, item in PREMIUM_PLANS.items():
+            if raw_lower == str(item.get("name", "")).lower():
+                plan_key = key
+                break
+    if not plan_key:
+        # Final compatibility fallback for records that only preserved duration.
+        raw_duration = str(order.get("plan_duration") or "").lower().strip()
+        for key, item in PREMIUM_PLANS.items():
+            if raw_duration == str(item.get("duration", "")).lower().strip():
+                plan_key = key
+                break
+    if not plan_key or plan_key not in PREMIUM_PLANS:
+        raise RuntimeError(f"Unknown Premium plan on payment order: {raw_plan or order.get('plan_duration')!r}")
 
     # Renewal rule: preserve remaining time. If current Premium is active,
     # add the selected duration to its existing expiry instead of overwriting it.
@@ -267,13 +290,13 @@ async def _activate_order(client, order, screenshot_message_id):
     else:
         base = now
 
-    new_expiry = _expiry_from(base, order["selected_plan"])
+    new_expiry = _expiry_from(base, plan_key)
 
     # This is the existing Premium access store used by the rest of the bot.
     await db.update_user({
         "id": user_id,
         "expiry_time": new_expiry,
-        "premium_plan": order["selected_plan"],
+        "premium_plan": plan_key,
         "premium_plan_name": order["plan_duration"],
         "premium_price": order["plan_price"],
     })
@@ -283,13 +306,14 @@ async def _activate_order(client, order, screenshot_message_id):
         {"user_id": user_id},
         {"$set": {
             "screenshot_message_id": int(screenshot_message_id),
+            "selected_plan": plan_key,
             "payment_status": "manually_verified",
             "premium_status": "active",
         }},
     )
 
     is_renewal = isinstance(current_expiry, datetime.datetime) and current_expiry > now
-    plan = PREMIUM_PLANS[order["selected_plan"]]
+    plan = PREMIUM_PLANS[plan_key]
     if is_renewal:
         text = (
             "♻️ <b>Premium Renewed Successfully!</b>\n\n"
@@ -499,7 +523,7 @@ async def select_premium_plan(client, query):
     order = await db.create_or_update_premium_order(
         user.id,
         user.username,
-        plan["name"],
+        plan_key,
         plan["duration"],
         plan["price"],
     )
