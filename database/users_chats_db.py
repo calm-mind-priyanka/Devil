@@ -461,6 +461,28 @@ class Database:
         """Always retain a screenshot submission, including unmatched ones."""
         return await self.payment_submissions.insert_one(data)
 
+
+    async def update_payment_submission(self, user_id, message_id, data):
+        return await self.payment_submissions.update_one(
+            {"user_id": int(user_id), "payment_bot_message_id": int(message_id)},
+            {"$set": data},
+        )
+
+    async def update_order_payment_review(self, user_id, message_id, check):
+        return await self.premium_orders.update_one(
+            {"user_id": int(user_id), "payment_status": "waiting_for_payment"},
+            {"$set": {
+                "screenshot_message_id": int(message_id),
+                "screenshot_received_at": datetime.datetime.utcnow(),
+                "payment_status": "manual_review_required",
+                "premium_status": "inactive",
+                "ocr_amount_found": check.get("amount_found"),
+                "ocr_amount_match": check.get("amount_match"),
+                "ocr_transaction_at": check.get("transaction_at"),
+                "ocr_time_match": check.get("time_match"),
+            }},
+        )
+
     async def attach_screenshot_to_order(self, user_id, message_id, received_at):
         return await self.premium_orders.update_one(
             {"user_id": int(user_id), "payment_status": "waiting_for_payment"},
@@ -498,8 +520,8 @@ class Database:
 
     async def get_pending_manual_verifications(self):
         return self.premium_orders.find({
-            "payment_status": "pending_manual_verification",
-            "premium_status": "active",
+            "payment_status": {"$in": ["pending_manual_verification", "manual_review_required"]},
+            "premium_status": {"$in": ["active", "inactive"]},
         })
 
     async def get_premium_order(self, user_id):
