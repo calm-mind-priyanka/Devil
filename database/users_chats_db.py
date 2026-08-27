@@ -538,6 +538,36 @@ class Database:
             }},
         )
 
+    async def approve_manual_payment(self, user_id):
+        """Mark a manual-review payment approved without depending on a command."""
+        now = datetime.datetime.utcnow()
+        return await self.premium_orders.update_one(
+            {
+                "user_id": int(user_id),
+                "payment_status": {"$in": ["manual_review_required", "pending_manual_verification"]},
+            },
+            {"$set": {
+                "payment_status": "manually_verified",
+                "manually_verified": True,
+                "manually_verified_at": now,
+            }},
+        )
+
+    async def reject_manual_payment(self, user_id):
+        """Reject a payment that is waiting for manual verification."""
+        return await self.premium_orders.update_one(
+            {
+                "user_id": int(user_id),
+                "payment_status": {"$in": ["manual_review_required", "pending_manual_verification"]},
+            },
+            {"$set": {
+                "payment_status": "manually_rejected",
+                "premium_status": "inactive",
+                "manually_verified": False,
+                "rejected_at": datetime.datetime.utcnow(),
+            }},
+        )
+
     async def set_subscription_expired(self, user_id, expired_at=None):
         return await self.premium_orders.update_one(
             {"user_id": int(user_id)},
