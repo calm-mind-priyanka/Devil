@@ -1455,10 +1455,24 @@ async def cb_handler(client: Client, query: CallbackQuery):
         )
 
     elif query.data == "free":
-        buttons = [
+        # Keep the existing plan/pricing page, but add explicit plan-selection
+        # buttons so a payment order can be tied to a Telegram user ID.
+        plan_buttons = [
+            [
+                InlineKeyboardButton("💳 𝟶𝟷 ᴡᴇᴇᴋ ₹𝟶𝟸𝟹", callback_data="buyplan_week"),
+                InlineKeyboardButton("💳 𝟶𝟷 ᴍᴏɴᴛʜ ₹𝟶𝟻𝟿", callback_data="buyplan_month"),
+            ],
+            [
+                InlineKeyboardButton("💳 𝟶𝟹 ᴍᴏɴᴛʜ ₹𝟷𝟺𝟿", callback_data="buyplan_3month"),
+                InlineKeyboardButton("💳 𝟶𝟼 ᴍᴏɴᴛʜ ₹𝟸𝟼𝟿", callback_data="buyplan_6month"),
+            ],
+            [
+                InlineKeyboardButton("💳 𝟷𝟸 ᴍᴏɴᴛʜ ₹𝟺𝟿𝟿", callback_data="buyplan_year"),
+                InlineKeyboardButton("💎 ʟɪꜰᴇᴛɪᴍᴇ ₹𝟿𝟿𝟿", callback_data="buyplan_lifetime"),
+            ],
             [
                 InlineKeyboardButton(
-                    "☆📸 ꜱᴇɴᴅ ꜱᴄʀᴇᴇɴꜱʜᴏᴛ 📸☆",
+                    "☆📸 ꜱᴇɴᴅ ꜱᴄʀᴇᴇɴsʜᴏᴛ ᴛᴏ ᴏᴡɴᴇʀ 📸☆",
                     url=f"https://telegram.me/{OWNER_USERNAME}",
                 )
             ],
@@ -1468,6 +1482,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 InlineKeyboardButton("• ᴄʟᴏꜱᴇ •", callback_data="close_data"),
             ],
         ]
+        buttons = plan_buttons
         reply_markup = InlineKeyboardMarkup(buttons)
         await client.edit_message_media(
             query.message.chat.id,
