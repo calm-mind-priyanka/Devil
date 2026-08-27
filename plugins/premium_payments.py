@@ -283,7 +283,7 @@ async def _activate_order(client, order, screenshot_message_id):
         {"user_id": user_id},
         {"$set": {
             "screenshot_message_id": int(screenshot_message_id),
-            "payment_status": "pending_manual_verification",
+            "payment_status": "manually_verified",
             "premium_status": "active",
         }},
     )
@@ -322,7 +322,7 @@ async def _activate_order(client, order, screenshot_message_id):
             f"Plan: {escape(plan['name'])}\n"
             f"Price: {escape(plan['price'])}\n"
             f"Screenshot message: <code>{screenshot_message_id}</code>\n"
-            f"Payment status: <code>pending_manual_verification</code>\n"
+            f"Payment status: <code>manually_verified</code>\n"
             f"Premium status: <code>active</code>\n"
             f"Expires: {_fmt_dt(new_expiry)}\n\n"
             "⚠️ Screenshot is a payment submission only. Manual transaction "
@@ -364,6 +364,7 @@ async def process_payment_submission(payment_client, message):
         "received_at": received_at,
         "matched_order": bool(order),
         "status": "matched" if order else "unmatched",
+        "review_status": "pending" if order else "not_required",
     }
     await db.record_payment_submission(submission)
 
@@ -402,6 +403,10 @@ async def process_payment_submission(payment_client, message):
     )
 
     if not passed:
+        await db.update_payment_submission(
+            user_id, message.id,
+            {"review_status": "manual_review_required"}
+        )
         await db.update_order_payment_review(user_id, message.id, check)
         reason = []
         if check["amount_match"] is False:
@@ -424,8 +429,8 @@ async def process_payment_submission(payment_client, message):
         )
         review_buttons = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ APPROVE PAYMENT", callback_data=f"payapprove:{user_id}"),
-                InlineKeyboardButton("❌ REJECT PAYMENT", callback_data=f"payreject:{user_id}"),
+                InlineKeyboardButton("✅ APPROVE PAYMENT", callback_data=f"payapprove:{user_id}:{message.id}"),
+                InlineKeyboardButton("❌ REJECT PAYMENT", callback_data=f"payreject:{user_id}:{message.id}"),
             ]
         ])
         for admin_id in _admins():
@@ -452,6 +457,10 @@ async def process_payment_submission(payment_client, message):
             pass
         return
 
+    await db.update_payment_submission(
+        user_id, message.id,
+        {"review_status": "auto_approved"}
+    )
     claimed = await db.activate_premium_order(user_id, message.id)
     if not claimed:
         await db.update_payment_submission(
@@ -805,31 +814,60 @@ def register_payment_bot_handlers(payment_client):
         if not query.from_user or query.from_user.id not in _admins():
             return await query.answer("You are not authorized.", show_alert=True)
 
-        action, raw_user_id = query.data.split(":", 1)
+        parts = query.data.split(":")
         try:
-            user_id = int(raw_user_id)
-        except ValueError:
+            action = parts[0]
+            user_id = int(parts[1])
+            screenshot_message_id = int(parts[2]) if len(parts) > 2 else None
+        except (ValueError, IndexError):
             return await query.answer("Invalid payment request.", show_alert=True)
 
-        order = await db.get_premium_order(user_id)
-        if not order:
-            return await query.answer("Payment record was not found.", show_alert=True)
+        submission = await db.get_payment_submission(user_id, screenshot_message_id)
+        if not submission:
+            return await query.answer("This payment screenshot was not found.", show_alert=True)
 
         if action == "payapprove":
-            result = await db.approve_manual_payment(user_id)
+            result = await db.claim_payment_review(user_id, screenshot_message_id, "approved")
             if not result.modified_count:
-                return await query.answer("This payment was already processed.", show_alert=True)
+                status = (submission.get("review_status") or "processed").replace("_", " ")
+                return await query.answer(f"This screenshot was already {status}.", show_alert=True)
+
+            # Approve the exact screenshot first, then atomically activate the
+            # matching pending order. If no matching order exists, revert the
+            # review state to pending so the admin is never locked out.
             order = await db.get_premium_order(user_id)
-            await _activate_order(client, order, order.get("screenshot_message_id"))
+            if not order or int(order.get("screenshot_message_id") or -1) != screenshot_message_id:
+                await db.update_payment_submission(
+                    user_id, screenshot_message_id, {"review_status": "manual_review_required"}
+                )
+                return await query.answer("The matching payment order changed. Review was kept pending.", show_alert=True)
+
+            result = await db.approve_manual_payment(user_id, screenshot_message_id)
+            if not result.modified_count:
+                await db.update_payment_submission(
+                    user_id, screenshot_message_id, {"review_status": "manual_review_required"}
+                )
+                return await query.answer("The order could not be approved. Review is still pending.", show_alert=True)
+
+            order = await db.get_premium_order(user_id)
+            await _activate_order(client, order, screenshot_message_id)
+            await db.update_payment_submission(user_id, screenshot_message_id, {"review_status": "approved"})
             text = (
                 f"✅ <b>Payment approved</b>\n\n"
                 f"User ID: <code>{user_id}</code>\n"
                 "Premium has been activated."
             )
         else:
-            result = await db.reject_manual_payment(user_id)
+            result = await db.claim_payment_review(user_id, screenshot_message_id, "rejected")
             if not result.modified_count:
-                return await query.answer("This payment was already processed.", show_alert=True)
+                status = (submission.get("review_status") or "processed").replace("_", " ")
+                return await query.answer(f"This screenshot was already {status}.", show_alert=True)
+
+            # Reject the exact screenshot. Only mark the order rejected when it
+            # is still pointing at this same screenshot.
+            order = await db.get_premium_order(user_id)
+            if order and int(order.get("screenshot_message_id") or -1) == screenshot_message_id:
+                await db.reject_manual_payment(user_id, screenshot_message_id)
             try:
                 await client.send_message(
                     user_id,
