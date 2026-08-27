@@ -21,6 +21,27 @@ API_HASH = environ.get("API_HASH", "6dd2dc70434b2f577f76a2e993135662")
 BOT_TOKEN = environ.get("BOT_TOKEN", "")
 PORT = environ.get("PORT", "8082")
 
+
+# Premium payment bot (optional second Telegram bot used only for screenshots).
+# Create a separate BotFather bot and put its token in PAYMENT_BOT_TOKEN.
+PAYMENT_BOT_TOKEN = environ.get("PAYMENT_BOT_TOKEN", "")
+PAYMENT_BOT_USERNAME = environ.get("PAYMENT_BOT_USERNAME", "").lstrip("@")
+# Space-separated Telegram numeric IDs allowed to use payment/premium admin commands.
+PAYMENT_ADMIN_IDS = [
+    int(admin) for admin in environ.get("PAYMENT_ADMIN_IDS", "").split()
+    if admin.lstrip("-").isdigit()
+]
+# Keep the existing Premium plans/prices. Prices are strings so currency formatting
+# is preserved exactly as configured.
+PREMIUM_PLANS = {
+    "week": {"name": "01 WEEK", "duration": "7 days", "days": 7, "price": "₹023"},
+    "month": {"name": "01 MONTH", "duration": "30 days", "days": 30, "price": "₹059"},
+    "3month": {"name": "03 MONTH", "duration": "90 days", "days": 90, "price": "₹149"},
+    "6month": {"name": "06 MONTH", "duration": "180 days", "days": 180, "price": "₹269"},
+    "year": {"name": "12 MONTH", "duration": "365 days", "days": 365, "price": "₹499"},
+    "lifetime": {"name": "LIFE TIME", "duration": "Lifetime", "days": None, "price": "₹999"},
+}
+
 # Owners
 ADMINS = [
     int(admin) if id_pattern.search(admin) else admin
@@ -181,6 +202,12 @@ admin_cmds = [
     "/add_premium - Add A User To Premium",
     "/premium_users - View All Premium Users",
     "/remove_premium - Remove A User's Premium Status",
+    "/pending - View payments waiting for manual verification",
+    "/premium - View a user's Premium details",
+    "/approve - Mark a payment as manually verified",
+    "/remove - Immediately remove a user's Premium access",
+    "/expire - Run the Premium expiry checker",
+    "/renew - Manually renew a user's Premium plan",
     "/add_redeem - Generate A Redeem Code",
     "/refresh - Refresh Free Trail",
     "/set_muc - Set Movie Update Channel",
