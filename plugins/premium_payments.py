@@ -100,14 +100,21 @@ def _remaining_label(expires_at):
 
 
 def _money_number(value):
-    """Turn ₹023 / INR 23.00 / Rs. 23 into numeric rupees."""
+    """Normalize a displayed money value to numeric rupees.
+
+    Leading zeroes are ignored, so ``₹023`` is 23.00, never 0.23. OCR may also
+    replace the decimal point with a colon, but that form is accepted only by
+    the screenshot amount extractor when it matches the expected order amount.
+    """
     if value is None:
         return None
-    m = re.search(r"(\d+(?:[.,]\d{1,2})?)", str(value).replace(",", ""))
+    text = str(value).strip().replace(",", "")
+    text = re.sub(r"(?i)(?:₹|rs\.?|inr)\s*", "", text)
+    m = re.search(r"(?<!\d)(\d+(?:[.]\d{1,2})?)(?!\d)", text)
     if not m:
         return None
     try:
-        return round(float(m.group(1).replace(",", "")), 2)
+        return round(float(m.group(1)), 2)
     except ValueError:
         return None
 
@@ -117,217 +124,140 @@ def _expected_amount(plan_price):
 
 
 def _extract_amount(text, expected):
-    """Extract the payment amount from OCR text without relying on one app format.
+    """Find the payment amount across common payment-app/OCR formats.
 
-    Payment apps render amounts differently and OCR can corrupt the currency symbol
-    (for example ``₹23.00`` may become ``23.00`` or ``<23:00``). We therefore score
-    amount candidates by context and, when an order amount is known, prefer the
-    candidate that numerically matches that order.
+    Currency labels are strongest evidence. When OCR drops the currency symbol,
+    a short standalone number can still be the amount; if an expected order
+    amount exists, a candidate must numerically match it before it is selected.
     """
     if not text:
         return None
-
     expected = _money_number(expected)
-    lines = [re.sub(r"\s+", " ", line.strip()) for line in text.splitlines() if line.strip()]
+    lines = [re.sub(r"\s+", " ", x.strip()) for x in text.splitlines() if x.strip()]
     candidates = []
 
-    # Currency/amount-labelled values are strongest evidence.
-    labelled_patterns = [
-        r"(?:₹|rs\.?|inr)\s*[oO]?\s*([0-9][0-9,]*(?:[.,][0-9]{1,2})?)",
-        r"(?:amount|paid|sent|received|debited|credited|total|pay(?:ment)?)\D{0,24}([0-9][0-9,]*(?:[.,][0-9]{1,2})?)",
+    # Normal currency/labelled forms: ₹23, ₹23.00, Rs 23, INR 23, Amount 23, etc.
+    labelled = [
+        r"(?:₹|rs\.?|inr)\s*([0-9][0-9,]*(?:[.]\d{1,2})?)",
+        r"(?:amount|paid|sent|received|debited|credited|total|payment)\D{0,30}([0-9][0-9,]*(?:[.]\d{1,2})?)",
     ]
     for line_no, line in enumerate(lines):
-        for pattern in labelled_patterns:
-            for match in re.finditer(pattern, line, flags=re.I):
-                value = _money_number(match.group(1))
+        for pat in labelled:
+            for m in re.finditer(pat, line, re.I):
+                value = _money_number(m.group(1))
                 if value is not None and value < 10000000:
-                    candidates.append((value, 100, line_no, line))
+                    candidates.append((value, 100, line_no))
 
-    # Standalone numeric lines are common when OCR drops the currency symbol.
-    # Accept decimals and the occasional OCR ':' corruption, but only as a
-    # candidate; the expected order amount still decides whether it is usable.
+    # OCR often produces a bare amount: "23", "23.00", or "<23:00".
+    # Treat colon as a decimal corruption only when it matches the expected price.
     for line_no, line in enumerate(lines):
-        stripped = line.strip()
-        m = re.fullmatch(r"[^0-9]{0,3}([0-9]{1,7})(?:[.,:]([0-9]{1,2}))?[^0-9]{0,3}", stripped)
-        if m:
-            whole, frac = m.groups()
-            # A time-looking standalone value such as 23:00 is only treated as
-            # an amount when it also matches the expected price.
-            value = float(whole + ("." + frac if frac is not None else ""))
-            if 0 <= value < 10000000:
-                context_score = 70
-                if expected is not None and abs(value - expected) < 0.01:
-                    context_score += 25
-                candidates.append((round(value, 2), context_score, line_no, line))
+        m = re.fullmatch(r"[^0-9]{0,6}(\d{1,7})(?:[.,:]([0-9]{1,2}))?[^0-9]{0,6}", line)
+        if not m:
+            continue
+        whole, frac = m.groups()
+        if frac is None:
+            value = float(whole)
+        else:
+            value = float(f"{whole}.{frac}")
+        if value >= 10000000:
+            continue
+        score = 70
+        if expected is not None and abs(value - expected) < 0.01:
+            score += 30
+        candidates.append((round(value, 2), score, line_no))
 
-    # Last fallback: short lines containing a number near payment-related words.
+    # Short text lines with payment labels can contain a bare amount.
     for line_no, line in enumerate(lines):
         if re.search(r"\b(?:amount|paid|sent|received|debited|credited|total|payment)\b", line, re.I):
-            for token in re.findall(r"\b\d{1,7}(?:[.,]\d{1,2})?\b", line):
+            for token in re.findall(r"(?<!\d)\d{1,7}(?:[.]\d{1,2})?(?!\d)", line):
                 value = _money_number(token)
                 if value is not None and value < 10000000:
-                    candidates.append((value, 65, line_no, line))
+                    candidates.append((value, 80, line_no))
 
     if not candidates:
         return None
-
-    # If the expected price is known, a numerically matching candidate is the
-    # safest choice. Among equal values prefer the strongest context.
     if expected is not None:
         matching = [c for c in candidates if abs(c[0] - expected) < 0.01]
         if matching:
             matching.sort(key=lambda c: (c[1], -c[2]), reverse=True)
             return matching[0][0]
-
+        # A readable different amount must not be silently treated as the plan price.
+        return None
     candidates.sort(key=lambda c: (c[1], -c[2]), reverse=True)
     return candidates[0][0]
 
 
 def _parse_transaction_datetime(text, reference, expected_amount=None):
-    """Extract a transaction datetime across common payment-app formats.
-
-    OCR may produce several time-like strings (for example an amount ``23.00``
-    can become ``23:00``). Collect all candidates, pair them with the nearest
-    date, and prefer candidates that look like an actual transaction timestamp.
-    """
+    """Extract transaction date and time from varied payment-app formats."""
     if not text:
         return None, False
-
-    cleaned = re.sub(r"\s+", " ", text)
     expected_amount = _money_number(expected_amount)
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    ref_ist = _aware_ist(reference) or reference
 
     date_candidates = []
-    numeric = [
-        r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b",
-        r"\b(\d{1,2})\.(\d{1,2})\.(\d{2,4})\b",
-    ]
-    for pat in numeric:
-        for m in re.finditer(pat, cleaned):
-            d, mo, y = map(int, m.groups())
-            if y < 100:
-                y += 2000
-            try:
-                date_candidates.append((datetime.datetime(y, mo, d), m.start()))
-            except ValueError:
-                continue
+    # Numeric dates.
+    for m in re.finditer(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b", cleaned):
+        d, mo, y = map(int, m.groups()); y += 2000 if y < 100 else 0
+        try: date_candidates.append((datetime.datetime(y, mo, d), m.start()))
+        except ValueError: pass
+    for m in re.finditer(r"\b(\d{1,2})\.(\d{1,2})\.(\d{2,4})\b", cleaned):
+        d, mo, y = map(int, m.groups()); y += 2000 if y < 100 else 0
+        try: date_candidates.append((datetime.datetime(y, mo, d), m.start()))
+        except ValueError: pass
 
-    month_re = re.compile(
-        r"\b(?:\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{2,4}|"
-        r"[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4})\b"
-    )
-    month_formats = (
-        "%d %b %Y", "%d %B %Y", "%b %d %Y", "%B %d %Y",
-        "%d %b, %Y", "%d %B, %Y", "%b %d, %Y", "%B %d, %Y",
-    )
-    for m in month_re.finditer(cleaned):
-        value = m.group(0).replace(",", "")
-        for fmt in month_formats:
-            try:
-                parsed = datetime.datetime.strptime(value, fmt)
-                if parsed.year < 100:
-                    parsed = parsed.replace(year=parsed.year + 2000)
-                date_candidates.append((parsed, m.start()))
-                break
-            except ValueError:
-                continue
-
-    # Relative date forms used by some payment apps.
-    ref_ist = _aware_ist(reference) or reference
-    relative_date = None
-    relative_match = re.search(r"\b(today|yesterday)\b", cleaned, re.I)
-    if relative_match:
-        base = ref_ist.date()
-        if relative_match.group(1).lower() == "yesterday":
-            base -= datetime.timedelta(days=1)
-        relative_date = datetime.datetime.combine(base, datetime.time())
-        date_candidates.append((relative_date, relative_match.start()))
-
-    # Date without a year, e.g. "28 Aug, 4:58 PM". Only use it when the month
-    # can be resolved against the order/reference date.
-    short_date_candidates = []
-    short_re = re.compile(r"\b(\d{1,2})\s+([A-Za-z]{3,9}),?\b")
-    for m in short_re.finditer(cleaned):
-        # Avoid interpreting words from a full date as a second date candidate.
-        if re.search(r"\b\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{2,4}\b", m.group(0) + " "):
-            continue
-        try:
-            month_num = datetime.datetime.strptime(m.group(2)[:3].title(), "%b").month
-            short_date_candidates.append((datetime.datetime(ref_ist.year, month_num, int(m.group(1))), m.start()))
-        except Exception:
-            continue
-    date_candidates.extend(short_date_candidates)
-
-    time_candidates = []
-    time_re = re.compile(
-        r"\b(\d{1,2})[:.]([0-5]\d)(?:[:.]([0-5]\d))?\s*(AM|PM|A\.M\.|P\.M\.)?\b",
-        re.I,
-    )
-    for m in time_re.finditer(cleaned):
-        hour, minute = int(m.group(1)), int(m.group(2))
-        second = int(m.group(3) or 0)
-        meridiem = (m.group(4) or "").upper().replace(".", "")
-        if meridiem:
-            if hour > 12:
-                continue
-            if hour == 12:
-                hour = 0
-            if meridiem == "PM":
-                hour += 12
-        if not 0 <= hour <= 23:
-            continue
-        # Standalone OCR such as "23:00" is often a corrupted ₹23.00. Keep it
-        # as a candidate, but give real AM/PM timestamps a much higher score.
-        line_start = cleaned.rfind(" ", 0, m.start()) + 1
-        line_end = cleaned.find(" ", m.end())
-        snippet = cleaned[line_start: line_end if line_end != -1 else len(cleaned)]
-        likely_amount_corruption = (
-            expected_amount is not None and
-            abs(float(hour) - expected_amount) < 0.01 and
-            not meridiem and
-            (m.group(3) or "") == ""
-        )
-        time_candidates.append((
-            datetime.time(hour, minute, second),
-            m.start(),
-            bool(meridiem),
-            likely_amount_corruption,
-            snippet,
-        ))
-
-    if not time_candidates:
-        return (None, bool(date_candidates))
-
-    # Prefer times with an explicit AM/PM marker, then times near an extracted
-    # date. This prevents a corrupted amount "23:00" from beating "4:58 PM".
-    best = None
-    for tvalue, tpos, explicit_ampm, likely_amount, _snippet in time_candidates:
-        if date_candidates:
-            nearest_date, dpos = min(date_candidates, key=lambda item: abs(item[1] - tpos))
-            distance = abs(dpos - tpos)
-            base_score = 1000 if explicit_ampm else 700
-            base_score -= min(distance, 500) * 0.5
-            if likely_amount:
-                base_score -= 450
-            candidate = (base_score, nearest_date, tvalue)
+    # Month-name dates, with or without spaces around the month/year.
+    month_names = "January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec"
+    month_pat = re.compile(
+        rf"\b(\d{{1,2}})\s*({month_names})\s*,?\s*(\d{{2,4}})?\b|"
+        rf"\b({month_names})\s*(\d{{1,2}})\s*,?\s*(\d{{2,4}})?\b", re.I)
+    for m in month_pat.finditer(cleaned):
+        if m.group(1):
+            day, mon, year = int(m.group(1)), m.group(2), m.group(3)
         else:
-            base_score = 500 if explicit_ampm else 300
-            if likely_amount:
-                base_score -= 450
-            candidate = (base_score, None, tvalue)
-        if best is None or candidate[0] > best[0]:
-            best = candidate
+            mon, day, year = m.group(4), m.group(5), m.group(6)
+            day = int(day)
+        year = int(year) if year else ref_ist.year
+        if year < 100: year += 2000
+        try:
+            month_num = datetime.datetime.strptime(mon[:3].title(), "%b").month
+            date_candidates.append((datetime.datetime(year, month_num, day), m.start()))
+        except ValueError:
+            pass
 
-    if best is None:
-        return (None, bool(date_candidates))
+    # Relative dates.
+    m = re.search(r"\b(today|yesterday)\b", cleaned, re.I)
+    if m:
+        d = ref_ist.date() - (datetime.timedelta(days=1) if m.group(1).lower() == "yesterday" else datetime.timedelta())
+        date_candidates.append((datetime.datetime.combine(d, datetime.time()), m.start()))
 
-    _, date_value, time_value = best
-    if date_value is None:
-        # We deliberately do not invent a date from the receipt time. Automatic
-        # approval requires the screenshot to provide a date (absolute or Today/
-        # Yesterday), matching the user's requested amount+date+time rule.
-        return (None, False)
+    # Time formats: 2:07 PM, 2.07 PM, 14:07, 02:07pm.
+    time_candidates = []
+    time_pat = re.compile(r"(?<!\d)(\d{1,2})\s*[:.]\s*(\d{2})(?:\s*[:.]\s*(\d{2}))?\s*(AM|PM|A\.M\.|P\.M\.)?(?!\d)", re.I)
+    for m in time_pat.finditer(cleaned):
+        hour, minute = int(m.group(1)), int(m.group(2)); second = int(m.group(3) or 0)
+        ap = (m.group(4) or "").upper().replace(".", "")
+        if ap:
+            if hour > 12: continue
+            if hour == 12: hour = 0
+            if ap == "PM": hour += 12
+        if hour > 23 or minute > 59 or second > 59: continue
+        # 23:00 is a common OCR corruption of ₹23.00; prefer an explicit AM/PM time.
+        likely_amount = expected_amount is not None and abs(hour - expected_amount) < 0.01 and not ap and m.group(3) is None
+        time_candidates.append((datetime.time(hour, minute, second), m.start(), bool(ap), likely_amount))
 
-    return (datetime.datetime.combine(date_value.date(), time_value), True)
+    if not date_candidates or not time_candidates:
+        return None, bool(date_candidates)
+
+    best = None
+    for t, tpos, explicit_ap, likely_amount in time_candidates:
+        date, dpos = min(date_candidates, key=lambda x: abs(x[1] - tpos))
+        score = (1000 if explicit_ap else 700) - min(abs(dpos - tpos), 1000) * 0.5
+        if likely_amount: score -= 500
+        candidate = (score, date, t)
+        if best is None or candidate[0] > best[0]: best = candidate
+    _, date, time = best
+    return datetime.datetime.combine(date.date(), time), True
 
 
 def _payment_success_signal(text):
@@ -355,54 +285,30 @@ def _payment_match_result(order, ocr_text, received_at):
         lower = _naive_utc(order.get("order_created_at")) or received_at
         upper = lower + datetime.timedelta(minutes=PAYMENT_MAX_DELAY_MINUTES)
         time_match = lower <= tx_dt <= upper
-        # The parser already supplied the date; the same timestamp must fall in
-        # the payment attempt's allowed window.
-        date_match = tx_dt.date() == _aware_ist(lower).date()
+        date_match = _aware_ist(tx_dt).date() == _aware_ist(lower).date()
         time_note = f"Transaction time: {_fmt_dt(tx_dt)}"
-    elif date_detected:
-        date_match = None
 
     success_signal = _payment_success_signal(ocr_text)
     if not PAYMENT_OCR_ENABLED:
-        return True, {
-            "ocr_status": "disabled", "amount_found": found, "amount_match": None,
-            "transaction_at": tx_dt, "date_match": None, "date_detected": False,
-            "time_match": None, "success_signal": None,
-            "confidence": 0, "time_note": "OCR checks disabled; sender/order matching used.",
-        }
+        return True, {"ocr_status": "disabled", "amount_found": found, "amount_match": None,
+                      "transaction_at": tx_dt, "date_match": None, "date_detected": False,
+                      "time_match": None, "success_signal": None, "confidence": 0,
+                      "time_note": "OCR checks disabled; sender/order matching used."}
 
-    # Auto-approval requires exactly the evidence requested: matching amount,
-    # readable date and time, and timestamp inside the payment-attempt window.
-    # A green/blue check or a "success" word is OPTIONAL evidence, never a hard
-    # requirement. This makes the verifier work across different payment apps.
-    hard_fail = amount_match is False or time_match is False or date_match is False
-    score = 0
-    if amount_match:
-        score += 50
-    if date_match:
-        score += 20
-    if time_match:
-        score += 25
-    if success_signal:
-        score += 5
-
+    # Required automatic-approval evidence: matching amount + matching date + time in window.
+    # Success text/tick is optional because payment apps display it differently.
+    hard_fail = amount_match is False or date_match is False or time_match is False
+    score = (50 if amount_match else 0) + (20 if date_match else 0) + (25 if time_match else 0) + (5 if success_signal else 0)
     passed = (
-        not hard_fail
-        and amount_match is True
-        and date_detected is True
-        and date_match is True
-        and time_match is True
+        not hard_fail and amount_match is True and date_detected is True
+        and date_match is True and time_match is True
     )
     return passed, {
         "ocr_status": "matched" if passed else "manual_review",
-        "amount_found": found,
-        "amount_match": amount_match,
-        "transaction_at": tx_dt,
-        "date_match": date_match,
-        "date_detected": date_detected,
-        "time_match": time_match,
-        "success_signal": success_signal,
-        "confidence": score,
+        "amount_found": found, "amount_match": amount_match,
+        "transaction_at": tx_dt, "date_match": date_match,
+        "date_detected": date_detected, "time_match": time_match,
+        "success_signal": success_signal, "confidence": score,
         "time_note": time_note,
     }
 
@@ -620,8 +526,6 @@ async def process_payment_submission(payment_client, message):
             "amount_found": check["amount_found"],
             "amount_match": check["amount_match"],
             "transaction_at": check["transaction_at"],
-            "date_match": check.get("date_match"),
-            "date_detected": check.get("date_detected"),
             "time_match": check["time_match"],
             "ocr_engine_status": ocr_status,
             "file_sha256": file_sha256,
@@ -645,17 +549,12 @@ async def process_payment_submission(payment_client, message):
             reason.append("Amount does not match the selected plan.")
         elif check["amount_match"] is None:
             reason.append("Payment amount could not be read confidently.")
-        if check.get("date_match") is False:
-            reason.append("Transaction date does not match the payment attempt date.")
-        elif check.get("date_detected") is not True:
-            reason.append("Transaction date could not be read confidently.")
         if check["time_match"] is False:
             reason.append("Transaction date/time is outside the allowed 10-minute window.")
         elif check["time_match"] is None:
-            reason.append("Transaction time could not be read confidently.")
-        # A success tick/text is optional. Amount + date + time are the required
-        # automatic-approval evidence, so absence of a success indicator is not
-        # a reason for manual review.
+            reason.append("Transaction date/time could not be read confidently.")
+        if check.get("success_signal") is False:
+            reason.append("A payment-success confirmation was not detected.")
         if check.get("duplicate_suspected"):
             reason.append("The same or a very similar screenshot was already submitted.")
         if check.get("ocr_status") == "disabled":
@@ -673,7 +572,7 @@ async def process_payment_submission(payment_client, message):
         tx_at = check.get("transaction_at")
         amount_result = "Matched" if check.get("amount_match") is True else ("Not matched" if check.get("amount_match") is False else "Not confidently detected")
         time_result = "Within allowed window" if check.get("time_match") is True else ("Outside allowed window" if check.get("time_match") is False else "Not confidently detected")
-        success_result = "Detected (optional)" if check.get("success_signal") is True else "Not detected (optional)"
+        success_result = "Detected" if check.get("success_signal") is True else ("Not detected" if check.get("success_signal") is False else "Not available")
         duplicate_result = "Suspected duplicate" if check.get("duplicate_suspected") else "No duplicate detected"
         ocr_result = str(ocr_status or "unknown").replace("_", " ").title()
         confidence = check.get("confidence")
