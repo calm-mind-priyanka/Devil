@@ -34,7 +34,7 @@ PAYMENT_ADMIN_IDS = [
 PAYMENT_OCR_ENABLED = is_enabled(environ.get("PAYMENT_OCR_ENABLED", "True"), True)
 # OCR uses the screenshot transaction time only as a plausibility check. It is
 # deliberately not treated as proof of a genuine payment.
-PAYMENT_MAX_DELAY_HOURS = float(environ.get("PAYMENT_MAX_DELAY_HOURS", "48"))
+PAYMENT_MAX_DELAY_MINUTES = int(environ.get("PAYMENT_MAX_DELAY_MINUTES", "10"))
 PAYMENT_FUTURE_TOLERANCE_MINUTES = int(environ.get("PAYMENT_FUTURE_TOLERANCE_MINUTES", "15"))
 # Keep the existing Premium plans/prices. Prices are strings so currency formatting
 # is preserved exactly as configured.
