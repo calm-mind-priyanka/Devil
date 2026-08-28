@@ -509,10 +509,12 @@ async def process_payment_submission(payment_client, message):
         if check.get("duplicate_suspected"):
             reason.append("same or very similar screenshot was already submitted")
         reason_text = "; ".join(reason) or "additional verification required"
+        sender_name = " ".join(part for part in [sender.first_name, sender.last_name] if part) or "Unknown"
+        sender_username = f"@{sender.username}" if sender.username else "none"
         review_text = (
             "🟡 <b>Payment screenshot needs manual review</b>\n\n"
-            f"👤 User: {escape((sender.first_name or "") + ((" " + sender.last_name) if sender.last_name else "") or "Unknown")}\n"
-            f"🔗 Username: @{escape(sender.username) if sender.username else "none"}\n"
+            f"👤 User: {escape(sender_name)}\n"
+            f"🔗 Username: {escape(sender_username)}\n"
             f"🆔 User ID: <code>{user_id}</code>\n"
             f"📦 Plan: {escape(order.get('plan_duration', 'N/A'))}\n"
             f"💰 Expected: {escape(order.get('plan_price', 'N/A'))}\n"
