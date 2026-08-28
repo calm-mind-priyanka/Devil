@@ -256,59 +256,55 @@ def _parse_transaction_datetime(text, reference, expected_amount=None):
     return datetime.datetime.combine(date, time), True
 
 
-def _payment_success_signal(text):
-    lower = (text or "").lower()
-    negative = ["failed", "declined", "reversed", "cancelled", "canceled", "pending"]
-    if any(word in lower for word in negative):
-        return False
-    positive = ["payment successful", "paid successfully", "transaction successful", "payment complete", "success", "paid", "sent"]
-    return any(word in lower for word in positive)
-
 
 def _payment_match_result(order, ocr_text, received_at):
+    """Only verify the two requested screenshot fields: amount and date/time.
+
+    Amount must match the selected plan price. Transaction date must be today
+    (same day/year as the bot's current IST date), and the transaction time must
+    be no older than PAYMENT_MAX_DELAY_MINUTES and must not be in the future.
+    Nothing else in the screenshot is used for automatic approval.
+    """
     expected = _expected_amount(order.get("plan_price"))
     found = _extract_amount(ocr_text, expected)
     amount_match = found is not None and expected is not None and abs(found - expected) < 0.01
-    # _parse_transaction_datetime returns (datetime, confidently_parsed).
-    # Unpack it before timezone conversion; treating the tuple itself as a
-    # datetime caused the deployed bot to crash with: tuple has no attribute
-    # tzinfo, resulting in the generic "processing failed temporarily" message.
+
     parsed_tx_dt, parsed_confident = _parse_transaction_datetime(ocr_text, received_at, expected)
     tx_dt = parsed_tx_dt if parsed_confident else None
     time_match = None
-    time_note = "Transaction date/time could not be read."
+    time_note = "Transaction date/time could not be read confidently."
     if tx_dt is not None:
-        tx_dt = IST.localize(tx_dt).astimezone(UTC).replace(tzinfo=None)
-        # The screenshot transaction must belong to this exact payment attempt:
-        # from plan selection time through the configured automatic-approval window.
-        # Do not allow a transaction timestamp from before the plan was selected.
-        lower = _naive_utc(order.get("order_created_at")) or received_at
-        upper = lower + datetime.timedelta(minutes=PAYMENT_MAX_DELAY_MINUTES)
-        time_match = lower <= tx_dt <= upper
-        time_note = f"Transaction time: {_fmt_dt(tx_dt)}"
+        # OCR parser returns a naive wall-clock datetime from the screenshot.
+        tx_ist = IST.localize(tx_dt)
+        received_ist = _aware_ist(received_at)
+        age_seconds = (received_ist - tx_ist).total_seconds()
+        same_date = tx_ist.date() == received_ist.date() and tx_ist.year == received_ist.year
+        not_future = age_seconds >= 0
+        within_window = age_seconds <= PAYMENT_MAX_DELAY_MINUTES * 60
+        time_match = same_date and not_future and within_window
+        time_note = (
+            f"Transaction time: {_fmt_dt(tx_ist)}; "
+            f"age: {max(0, int(age_seconds))}s"
+        )
+        tx_dt = tx_ist.astimezone(UTC).replace(tzinfo=None)
 
-    success_signal = _payment_success_signal(ocr_text)
     if not PAYMENT_OCR_ENABLED:
-        return True, {"ocr_status": "disabled", "amount_found": found, "amount_match": None,
-                      "transaction_at": tx_dt, "time_match": None, "success_signal": None,
-                      "confidence": 0, "time_note": "OCR checks disabled; sender/order matching used."}
+        return False, {
+            "ocr_status": "disabled",
+            "amount_found": found,
+            "amount_match": amount_match,
+            "transaction_at": tx_dt,
+            "time_match": time_match,
+            "time_note": "OCR checks are disabled; automatic amount/date-time verification cannot run.",
+        }
 
-    # Hard rejects: a readable wrong amount or a readable old/out-of-window time
-    # must never be auto-approved. Missing optional evidence is handled by confidence.
-    hard_fail = amount_match is False or time_match is False
-    score = 0
-    if amount_match: score += 55
-    if time_match: score += 25
-    if success_signal: score += 10
-    if tx_dt is not None: score += 5
-    if re.search(r"(?:utr|rrn|transaction\s*(?:id|no)|reference\s*(?:id|no))\D{0,10}[A-Z0-9-]{6,}", ocr_text or "", re.I):
-        score += 5
-    passed = (not hard_fail) and amount_match is True and time_match is True and score >= 80
+    passed = amount_match is True and time_match is True
     return passed, {
         "ocr_status": "matched" if passed else "manual_review",
-        "amount_found": found, "amount_match": amount_match,
-        "transaction_at": tx_dt, "time_match": time_match,
-        "success_signal": success_signal, "confidence": score,
+        "amount_found": found,
+        "amount_match": amount_match,
+        "transaction_at": tx_dt,
+        "time_match": time_match,
         "time_note": time_note,
     }
 
@@ -338,7 +334,7 @@ async def _ocr_payment_message(payment_client, message):
                         texts.append(value.strip())
                 except Exception:
                     continue
-        # Keep unique OCR outputs together so different layout modes can complement each other.
+        # Keep unique OCR outputs together so the amount/date-time parser has multiple OCR readings to choose from.
         text = "\n".join(dict.fromkeys(texts))[:12000]
         small = ImageOps.fit(gray, (32, 32))
         pixels = list(small.getdata())
@@ -351,7 +347,76 @@ async def _ocr_payment_message(payment_client, message):
         return "", "ocr_failed", None, None
 
 
-async def _activate_order(client, order, screenshot_message_id):
+async def _delete_later(client, chat_id, message_id, delay=300):
+    """Delete a bot notification after a short read window."""
+    if not message_id:
+        return
+    async def _job():
+        try:
+            await asyncio.sleep(delay)
+            await client.delete_messages(chat_id, message_id)
+        except Exception:
+            pass
+    asyncio.create_task(_job())
+
+
+async def _send_premium_success_message(client, order, user_id, activated_at=None, expires_at=None):
+    """Send the normal Premium success message after automatic/manual approval."""
+    now = activated_at or _now()
+    expiry = expires_at
+    if expiry is None:
+        current = await db.get_user(int(user_id))
+        current_expiry = _naive_utc(current.get("expiry_time")) if current else None
+        raw_plan = str(order.get("selected_plan") or "").strip()
+        plan_key = _plan_key(raw_plan)
+        if not plan_key:
+            for key, item in PREMIUM_PLANS.items():
+                if raw_plan.lower() == str(item.get("name", "")).lower() or raw_plan.lower() == str(item.get("duration", "")).lower():
+                    plan_key = key
+                    break
+        if plan_key:
+            base = current_expiry if isinstance(current_expiry, datetime.datetime) and current_expiry > now else now
+            expiry = _expiry_from(base, plan_key)
+    raw_plan = str(order.get("selected_plan") or "").strip()
+    plan_key = _plan_key(raw_plan)
+    if not plan_key:
+        for key, item in PREMIUM_PLANS.items():
+            if raw_plan.lower() == str(item.get("name", "")).lower() or raw_plan.lower() == str(item.get("duration", "")).lower():
+                plan_key = key
+                break
+    if not plan_key or plan_key not in PREMIUM_PLANS:
+        return
+    plan = PREMIUM_PLANS[plan_key]
+    current = await db.get_user(int(user_id))
+    current_expiry = _naive_utc(current.get("expiry_time")) if current else None
+    is_renewal = isinstance(current_expiry, datetime.datetime) and current_expiry > now
+    if is_renewal:
+        text = (
+            "♻️ <b>Premium Renewed Successfully!</b>\n\n"
+            f"📦 Plan: {escape(plan['name'])}\n"
+            f"⏳ Added: {escape(plan['duration'])}\n"
+            f"📅 New Expiry: {_fmt_dt(expiry)}\n"
+            "🟢 Status: Active\n\n"
+            "Thank you for renewing Premium!"
+        )
+    else:
+        text = (
+            "✅ <b>Premium Activated Successfully!</b>\n\n"
+            f"📦 Plan: {escape(plan['name'])}\n"
+            f"⏳ Duration: {escape(plan['duration'])}\n"
+            f"📅 Activated: {_fmt_dt(now)}\n"
+            f"⏳ Expires: {_fmt_dt(expiry)}\n"
+            "🟢 Status: Active\n\n"
+            "Thank you for purchasing Premium!"
+        )
+    try:
+        sent = await client.send_message(int(user_id), text, parse_mode=enums.ParseMode.HTML)
+        await _delete_later(client, int(user_id), sent.id)
+    except Exception as exc:
+        LOGGER.warning("Could not send Premium activation to %s: %s", user_id, exc)
+
+
+async def _activate_order(client, order, screenshot_message_id, manual_pending=False, notify_user=True):
     """Grant Premium using the exact plan stored on the payment order.
 
     Older orders may contain a display name (for example ``01 WEEK``) instead
@@ -405,36 +470,15 @@ async def _activate_order(client, order, screenshot_message_id):
         {"$set": {
             "screenshot_message_id": int(screenshot_message_id),
             "selected_plan": plan_key,
-            "payment_status": "manually_verified",
+            "payment_status": "pending_manual_verification" if manual_pending else "manually_verified",
             "premium_status": "active",
+            "manually_verified": not manual_pending,
+            "manually_verified_at": None if manual_pending else now,
         }},
     )
 
-    is_renewal = isinstance(current_expiry, datetime.datetime) and current_expiry > now
-    plan = PREMIUM_PLANS[plan_key]
-    if is_renewal:
-        text = (
-            "♻️ <b>Premium Renewed Successfully!</b>\n\n"
-            f"📦 Plan: {escape(plan['name'])}\n"
-            f"⏳ Added: {escape(plan['duration'])}\n"
-            f"📅 New Expiry: {_fmt_dt(new_expiry)}\n"
-            "🟢 Status: Active\n\n"
-            "Thank you for renewing Premium!"
-        )
-    else:
-        text = (
-            "✅ <b>Premium Activated Successfully!</b>\n\n"
-            f"📦 Plan: {escape(plan['name'])}\n"
-            f"⏳ Duration: {escape(plan['duration'])}\n"
-            f"📅 Activated: {_fmt_dt(now)}\n"
-            f"⏳ Expires: {_fmt_dt(new_expiry)}\n"
-            "🟢 Status: Active\n\n"
-            "Thank you for purchasing Premium!"
-        )
-    try:
-        await client.send_message(user_id, text, parse_mode=enums.ParseMode.HTML)
-    except Exception as exc:
-        LOGGER.warning("Could not send Premium activation to %s: %s", user_id, exc)
+    if notify_user:
+        await _send_premium_success_message(client, order, user_id, activated_at=now, expires_at=new_expiry)
 
     try:
         await client.send_message(
@@ -444,11 +488,10 @@ async def _activate_order(client, order, screenshot_message_id):
             f"Plan: {escape(plan['name'])}\n"
             f"Price: {escape(plan['price'])}\n"
             f"Screenshot message: <code>{screenshot_message_id}</code>\n"
-            f"Payment status: <code>manually_verified</code>\n"
+            f"Payment status: <code>{'pending_manual_verification' if manual_pending else 'manually_verified'}</code>\n"
             f"Premium status: <code>active</code>\n"
             f"Expires: {_fmt_dt(new_expiry)}\n\n"
-            "⚠️ Screenshot is a payment submission only. Manual transaction "
-            "verification is still required.",
+            + ("⚠️ Screenshot is waiting for manual review. Use REJECT if it is fake or invalid." if manual_pending else "✅ Automatic amount/date-time checks passed."),
             parse_mode=enums.ParseMode.HTML,
         )
     except Exception as exc:
@@ -456,7 +499,7 @@ async def _activate_order(client, order, screenshot_message_id):
 
 
 async def process_payment_submission(payment_client, message):
-    """Handle a screenshot, verify sender/order and perform a soft OCR check."""
+    """Handle a screenshot using only amount/date-time checks plus duplicate protection."""
     sender = message.from_user
     if not sender:
         return
@@ -491,6 +534,26 @@ async def process_payment_submission(payment_client, message):
     }
     await db.record_payment_submission(submission)
 
+    # Download once to retain exact/perceptual duplicate protection. The same
+    # screenshot must never be processed repeatedly as a fresh payment.
+    ocr_text, ocr_status, file_sha256, perceptual_hash = await _ocr_payment_message(payment_client, message)
+    duplicate = await db.find_duplicate_payment_submission(file_sha256, perceptual_hash, user_id, message.id)
+    if duplicate and not order:
+        await db.update_payment_submission(
+            user_id, message.id,
+            {"ocr_status": "duplicate", "ocr_text": ocr_text[:4000], "file_sha256": file_sha256,
+             "perceptual_hash": perceptual_hash, "duplicate_suspected": True,
+             "review_status": "duplicate"},
+        )
+        try:
+            await message.reply_text(
+                "⚠️ This payment screenshot was already submitted.\n"
+                "Please do not send the same screenshot again."
+            )
+        except Exception:
+            pass
+        return
+
     if not order:
         await _notify_admins(
             payment_client,
@@ -508,9 +571,6 @@ async def process_payment_submission(payment_client, message):
         except Exception:
             pass
         return
-
-    ocr_text, ocr_status, file_sha256, perceptual_hash = await _ocr_payment_message(payment_client, message)
-    duplicate = await db.find_duplicate_payment_submission(file_sha256, perceptual_hash, user_id, message.id)
     passed, check = _payment_match_result(order, ocr_text, received_at)
     if duplicate:
         passed = False
@@ -530,8 +590,6 @@ async def process_payment_submission(payment_client, message):
             "ocr_engine_status": ocr_status,
             "file_sha256": file_sha256,
             "perceptual_hash": perceptual_hash,
-            "confidence": check.get("confidence"),
-            "success_signal": check.get("success_signal"),
             "duplicate_suspected": check.get("duplicate_suspected", False),
         },
     )
@@ -541,7 +599,6 @@ async def process_payment_submission(payment_client, message):
             user_id, message.id,
             {"review_status": "manual_review_required"}
         )
-        await db.update_order_payment_review(user_id, message.id, check)
         # Build an admin-only verification report. Keep the exact technical reason
         # visible to reviewers so they can understand why auto-approval stopped.
         reason = []
@@ -553,8 +610,6 @@ async def process_payment_submission(payment_client, message):
             reason.append("Transaction date/time is outside the allowed 10-minute window.")
         elif check["time_match"] is None:
             reason.append("Transaction date/time could not be read confidently.")
-        if check.get("success_signal") is False:
-            reason.append("A payment-success confirmation was not detected.")
         if check.get("duplicate_suspected"):
             reason.append("The same or a very similar screenshot was already submitted.")
         if check.get("ocr_status") == "disabled":
@@ -566,17 +621,14 @@ async def process_payment_submission(payment_client, message):
         elif not reason:
             reason.append("The available evidence did not reach the automatic approval threshold.")
 
-        lower = _naive_utc(order.get("order_created_at")) or received_at
-        upper = lower + datetime.timedelta(minutes=PAYMENT_MAX_DELAY_MINUTES)
+        lower = received_at - datetime.timedelta(minutes=PAYMENT_MAX_DELAY_MINUTES)
+        upper = received_at
         amount_found = check.get("amount_found")
         tx_at = check.get("transaction_at")
         amount_result = "Matched" if check.get("amount_match") is True else ("Not matched" if check.get("amount_match") is False else "Not confidently detected")
         time_result = "Within allowed window" if check.get("time_match") is True else ("Outside allowed window" if check.get("time_match") is False else "Not confidently detected")
-        success_result = "Detected" if check.get("success_signal") is True else ("Not detected" if check.get("success_signal") is False else "Not available")
         duplicate_result = "Suspected duplicate" if check.get("duplicate_suspected") else "No duplicate detected"
         ocr_result = str(ocr_status or "unknown").replace("_", " ").title()
-        confidence = check.get("confidence")
-        confidence_text = f"{confidence}%" if isinstance(confidence, (int, float)) else "N/A"
         reasons_block = "\n".join(f"• {item}" for item in reason)
 
         sender_name = " ".join(part for part in [sender.first_name, sender.last_name] if part) or "Unknown"
@@ -596,12 +648,10 @@ async def process_payment_submission(payment_client, message):
             f"• Transaction date/time: {escape(_fmt_dt(tx_at) if tx_at else 'Not detected')}\n"
             f"• Time check: {escape(time_result)}\n"
             f"• Allowed window: {_fmt_dt(lower)} → {_fmt_dt(upper)} ({PAYMENT_MAX_DELAY_MINUTES} min)\n"
-            f"• Payment-success signal: {escape(success_result)}\n"
-            f"• Duplicate check: {escape(duplicate_result)}\n"
-            f"• Verification confidence: {escape(confidence_text)}\n\n"
+            f"• Duplicate check: {escape(duplicate_result)}\n\n"
             "<b>⚠️ Exact reason(s) for manual review</b>\n"
             f"{escape(reasons_block)}\n\n"
-            "Premium was <b>not</b> activated automatically. Please review the screenshot and choose Approve or Reject."
+            "Premium has been activated temporarily. Please check the screenshot and use REJECT if the payment is fake or invalid."
         )
         review_buttons = InlineKeyboardMarkup([
             [
@@ -609,26 +659,58 @@ async def process_payment_submission(payment_client, message):
                 InlineKeyboardButton("❌ REJECT PAYMENT", callback_data=f"payreject:{user_id}:{message.id}"),
             ]
         ])
+        # Give Premium immediately even when automatic evidence checks fail.
+        # The owner is the final manual authority and can remove access with REJECT.
+        pending_claim = await db.activate_premium_order(user_id, message.id)
+        if pending_claim:
+            try:
+                await _activate_order(payment_client, pending_claim, message.id, manual_pending=True, notify_user=False)
+                await db.premium_orders.update_one(
+                    {"user_id": user_id, "screenshot_message_id": message.id},
+                    {"$set": {
+                        "ocr_amount_found": check.get("amount_found"),
+                        "ocr_amount_match": check.get("amount_match"),
+                        "ocr_transaction_at": check.get("transaction_at"),
+                        "ocr_time_match": check.get("time_match"),
+                        "payment_status": "pending_manual_verification",
+                        "premium_status": "active",
+                    }},
+                )
+            except Exception:
+                LOGGER.exception("Temporary Premium activation failed for manual review: %s", user_id)
+        else:
+            existing = await db.get_premium_order(user_id)
+            if not existing or existing.get("screenshot_message_id") != message.id:
+                LOGGER.warning("Could not claim manual-review order for user %s", user_id)
+
         for admin_id in _admins():
             try:
-                await payment_client.send_message(
+                admin_notice = await payment_client.send_message(
                     admin_id,
                     review_text,
                     parse_mode=enums.ParseMode.HTML,
                     reply_markup=review_buttons,
                 )
-                await payment_client.copy_message(
+                await _delete_later(payment_client, admin_id, admin_notice.id)
+                copied = await payment_client.copy_message(
                     admin_id,
                     message.chat.id,
                     message.id,
                 )
+                await _delete_later(payment_client, admin_id, copied.id)
             except Exception as exc:
                 LOGGER.warning("Could not send manual payment review to %s: %s", admin_id, exc)
         try:
-            await message.reply_text(
-                "🟡 <b>Payment screenshot received successfully.</b>\n\n"
-                "Your payment verification is currently being completed. Please wait for the result. ⏳"
+            pending_msg = await message.reply_text(
+                "🟡 <b>Payment screenshot received.</b>\n\n"
+                "Your payment could not be auto-verified because it needs manual review. "
+                "Your Premium access has been activated temporarily while the admin checks the screenshot. "
+                "You will receive the normal Premium success message if it is verified as genuine. ⏳"
             )
+            await db.update_payment_submission(
+                user_id, message.id, {"user_notification_message_id": int(pending_msg.id)}
+            )
+            await _delete_later(payment_client, user_id, pending_msg.id)
         except Exception:
             pass
         return
@@ -643,6 +725,45 @@ async def process_payment_submission(payment_client, message):
             user_id, message.id, {"status": "duplicate_after_activation"}
         )
         return
+
+    # Auto-approved payments are also sent to every payment admin. No decision
+    # button is needed because the amount/date-time checks already passed. The
+    # screenshot is still copied to the admin for visibility/audit.
+    try:
+        plan_name = str(claimed.get("plan_duration", "N/A"))
+        plan_price = str(claimed.get("plan_price", "N/A"))
+        auto_review_text = (
+            "✅ <b>Payment Auto-Approved</b>\n\n"
+            f"👤 User: {escape((sender.first_name or '') + ((' ' + sender.last_name) if sender.last_name else '') or 'Unknown')}\n"
+            f"🔗 Username: {escape('@' + sender.username if sender.username else 'none')}\n"
+            f"🆔 User ID: <code>{user_id}</code>\n"
+            f"📦 Plan: {escape(plan_name)}\n"
+            f"💰 Amount: {escape(plan_price)}\n"
+            f"🆔 Screenshot message: <code>{message.id}</code>\n\n"
+            "<b>Automatic checks passed:</b>\n"
+            "• 💰 Amount matches the selected plan\n"
+            "• 📅 Transaction date is today / same year\n"
+            f"• ⏰ Transaction time is within {PAYMENT_MAX_DELAY_MINUTES} minutes\n\n"
+            "🟢 Premium was activated automatically."
+        )
+        for admin_id in _admins():
+            try:
+                admin_notice = await payment_client.send_message(
+                    admin_id,
+                    auto_review_text,
+                    parse_mode=enums.ParseMode.HTML,
+                )
+                await _delete_later(payment_client, admin_id, admin_notice.id)
+                copied = await payment_client.copy_message(
+                    admin_id,
+                    message.chat.id,
+                    message.id,
+                )
+                await _delete_later(payment_client, admin_id, copied.id)
+            except Exception as exc:
+                LOGGER.warning("Could not send auto-approved payment to %s: %s", admin_id, exc)
+    except Exception as exc:
+        LOGGER.warning("Could not build auto-approved admin notification: %s", exc)
 
     try:
         await payment_client.copy_message(
@@ -702,8 +823,8 @@ async def select_premium_plan(client, query):
         "🟡 Payment status: <code>waiting_for_payment</code>\n\n"
         "Complete the payment using the existing payment instructions, then "
         "send the payment screenshot to the dedicated payment bot.\n\n"
-        "⚠️ Your screenshot is treated only as a payment submission. "
-        "The transaction will still be manually checked by the admin."
+        "⚠️ Automatic verification checks only the plan amount and transaction date/time. "
+        "If either cannot be matched, the screenshot is sent to the admin for manual review."
     )
     await query.message.edit_text(
         payment_text,
@@ -774,31 +895,10 @@ async def premium_details(client, message):
 async def approve_payment(client, message):
     if message.from_user.id not in _admins():
         return await message.reply_text("You are not authorized to use this command.")
-    if len(message.command) != 2:
-        return await message.reply_text("Usage: /approve USER_ID")
-    try:
-        user_id = int(message.command[1])
-    except ValueError:
-        return await message.reply_text("USER_ID must be numeric.")
-
-    order = await db.get_premium_order(user_id)
-    if not order:
-        return await message.reply_text("No Premium payment record found for this user.")
-
-    screenshot_id = order.get("screenshot_message_id")
-    if not screenshot_id:
-        return await message.reply_text("No payment screenshot is attached to this order.")
-    approved = await db.approve_manual_payment(user_id, screenshot_id)
-    if not approved.modified_count:
-        return await message.reply_text("This payment is not waiting for manual approval.")
-    try:
-        fresh = await db.get_premium_order(user_id)
-        await _activate_order(client, fresh, screenshot_id)
-    except Exception as exc:
-        LOGGER.exception("Command approval activation failed for %s", user_id)
-        await db.premium_orders.update_one({"user_id": user_id, "screenshot_message_id": screenshot_id}, {"$set": {"payment_status": "manual_review_required", "premium_status": "inactive"}})
-        return await message.reply_text("Premium activation failed; the review was restored to pending.")
-    await message.reply_text(f"✅ Payment approved and Premium activated for <code>{user_id}</code>.", parse_mode=enums.ParseMode.HTML)
+    await message.reply_text(
+        "ℹ️ Payment approval is automatic when the amount and transaction date/time pass the checks.\n"
+        "For manual cases, use the REJECT button on the review message."
+    )
 
 
 @Client.on_message(filters.command("remove"))
@@ -993,7 +1093,7 @@ async def premium_expiry_worker(client):
 
 
 def register_payment_bot_handlers(payment_client):
-    @payment_client.on_callback_query(filters.regex(r"^pay(approve|reject):"))
+    @payment_client.on_callback_query(filters.regex(r"^pay(?:reject|approve):"))
     async def manual_payment_review_callback(client, query):
         if not query.from_user or query.from_user.id not in _admins():
             return await query.answer("You are not authorized.", show_alert=True)
@@ -1010,84 +1110,46 @@ def register_payment_bot_handlers(payment_client):
         if not submission:
             return await query.answer("This payment screenshot was not found.", show_alert=True)
 
-        if action == "payapprove":
-            # Lock this exact screenshot while activation is running. Do NOT mark
-            # it approved until Premium access and the user notification succeed.
-            result = await db.claim_payment_review(user_id, screenshot_message_id, "processing")
-            if not result.modified_count:
-                current = await db.get_payment_submission(user_id, screenshot_message_id)
-                status = ((current or {}).get("review_status") or "processed").replace("_", " ")
-                return await query.answer(f"This screenshot is already {status}.", show_alert=True)
+        if action not in ("payreject", "payapprove"):
+            return await query.answer("Invalid payment review action.", show_alert=True)
 
-            order = await db.get_premium_order(user_id)
-            if not order or int(order.get("screenshot_message_id") or -1) != screenshot_message_id:
-                await db.update_payment_submission(
-                    user_id, screenshot_message_id, {"review_status": "manual_review_required"}
-                )
-                return await query.answer("The matching payment order changed. Review was kept pending.", show_alert=True)
+        decision = "rejected" if action == "payreject" else "approved"
+        result = await db.claim_payment_review(user_id, screenshot_message_id, decision)
+        if not result.modified_count:
+            status = (submission.get("review_status") or "processed").replace("_", " ")
+            return await query.answer(f"This screenshot was already {status}.", show_alert=True)
 
-            # The exact screenshot must still belong to a pending manual-review
-            # order. Activate Premium first; only then finalize the review as approved.
-            approved = await db.approve_manual_payment(user_id, screenshot_message_id)
-            if not approved.modified_count:
-                await db.update_payment_submission(
-                    user_id, screenshot_message_id, {"review_status": "manual_review_required"}
-                )
-                return await query.answer("The order could not be approved. Review is still pending.", show_alert=True)
-
-            try:
-                order = await db.get_premium_order(user_id)
-                if not order:
-                    raise RuntimeError("Premium order disappeared during approval")
-                await _activate_order(client, order, screenshot_message_id)
-            except Exception as exc:
-                LOGGER.exception("Manual Premium activation failed for %s", user_id)
-                # Never leave a review falsely approved when activation failed.
-                await db.premium_orders.update_one(
-                    {"user_id": user_id, "screenshot_message_id": screenshot_message_id},
-                    {"$set": {
-                        "payment_status": "manual_review_required",
-                        "premium_status": "inactive",
-                    }},
-                )
-                await db.update_payment_submission(
-                    user_id, screenshot_message_id,
-                    {"review_status": "manual_review_required", "approval_error": str(exc)[:500]},
-                )
-                return await query.answer("Premium activation failed. Review was restored to pending.", show_alert=True)
-
-            await db.update_payment_submission(
-                user_id, screenshot_message_id,
-                {"review_status": "approved", "approval_error": None},
-            )
-            text = (
-                f"✅ <b>Payment approved</b>\n\n"
-                f"User ID: <code>{user_id}</code>\n"
-                "Premium has been activated successfully."
-            )
-        else:
-            result = await db.claim_payment_review(user_id, screenshot_message_id, "rejected")
-            if not result.modified_count:
-                status = (submission.get("review_status") or "processed").replace("_", " ")
-                return await query.answer(f"This screenshot was already {status}.", show_alert=True)
-
-            # Reject the exact screenshot. Only mark the order rejected when it
-            # is still pointing at this same screenshot.
-            order = await db.get_premium_order(user_id)
+        order = await db.get_premium_order(user_id)
+        if action == "payreject":
+            # Reject the exact screenshot and remove the user's Premium access.
             if order and int(order.get("screenshot_message_id") or -1) == screenshot_message_id:
                 await db.reject_manual_payment(user_id, screenshot_message_id)
+                await db.remove_premium_access(user_id)
             try:
-                await client.send_message(
+                sent = await client.send_message(
                     user_id,
-                    "❌ <b>Your payment screenshot was rejected after manual review.</b>\n"
-                    "Please contact the admin if you think this is a mistake.",
+                    "❌ <b>Your Premium payment was rejected after manual review.</b>\n"
+                    "Your Premium access has been removed. Please contact the admin if you think this is a mistake.",
                     parse_mode=enums.ParseMode.HTML,
                 )
+                await _delete_later(client, user_id, sent.id)
             except Exception:
                 pass
             text = (
                 f"❌ <b>Payment rejected</b>\n\n"
-                f"User ID: <code>{user_id}</code>"
+                f"User ID: <code>{user_id}</code>\n"
+                "Premium access has been removed."
+            )
+        else:
+            # Manual reviewer confirms the screenshot is genuine. Premium was
+            # already activated temporarily; only finalize its status here.
+            if order and int(order.get("screenshot_message_id") or -1) == screenshot_message_id:
+                await db.approve_manual_payment(user_id, screenshot_message_id)
+            await _send_premium_success_message(client, order or submission, user_id)
+            text = (
+                f"✅ <b>Payment manually verified</b>\n\n"
+                f"User ID: <code>{user_id}</code>\n"
+                "Premium payment marked genuine and Premium remains active."
             )
 
         await query.answer("Payment review completed.")
@@ -1096,6 +1158,7 @@ def register_payment_bot_handlers(payment_client):
                 text,
                 parse_mode=enums.ParseMode.HTML,
             )
+            await _delete_later(client, query.message.chat.id, query.message.id)
         except Exception:
             pass
 
