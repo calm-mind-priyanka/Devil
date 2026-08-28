@@ -39,8 +39,8 @@ PAYMENT_FUTURE_TOLERANCE_MINUTES = int(environ.get("PAYMENT_FUTURE_TOLERANCE_MIN
 # Keep the existing Premium plans/prices. Prices are strings so currency formatting
 # is preserved exactly as configured.
 PREMIUM_PLANS = {
-    "week": {"name": "01 WEEK", "duration": "7 days", "days": 7, "price": "₹023"},
-    "month": {"name": "01 MONTH", "duration": "30 days", "days": 30, "price": "₹059"},
+    "week": {"name": "01 WEEK", "duration": "7 days", "days": 7, "price": "₹23"},
+    "month": {"name": "01 MONTH", "duration": "30 days", "days": 30, "price": "₹59"},
     "3month": {"name": "03 MONTH", "duration": "90 days", "days": 90, "price": "₹149"},
     "6month": {"name": "06 MONTH", "duration": "180 days", "days": 180, "price": "₹269"},
     "year": {"name": "12 MONTH", "duration": "365 days", "days": 365, "price": "₹499"},
