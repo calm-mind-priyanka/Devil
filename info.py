@@ -18,14 +18,14 @@ def is_enabled(value, default):
 SESSION = environ.get("SESSION", "Media_search")
 API_ID = int(environ.get("API_ID", "24222039"))
 API_HASH = environ.get("API_HASH", "6dd2dc70434b2f577f76a2e993135662")
-BOT_TOKEN = environ.get("BOT_TOKEN", "@Sandydeveloper_bot")
+BOT_TOKEN = environ.get("BOT_TOKEN", "")
 PORT = environ.get("PORT", "8082")
 
 
 # Premium payment bot (optional second Telegram bot used only for screenshots).
 # Create a separate BotFather bot and put its token in PAYMENT_BOT_TOKEN.
 PAYMENT_BOT_TOKEN = environ.get("PAYMENT_BOT_TOKEN", "")
-PAYMENT_BOT_USERNAME = environ.get("PAYMENT_BOT_USERNAME", "").lstrip("@")
+PAYMENT_BOT_USERNAME = environ.get("PAYMENT_BOT_USERNAME", "@Sandydeveloper_bot").lstrip("@")
 # Space-separated Telegram numeric IDs allowed to use payment/premium admin commands.
 PAYMENT_ADMIN_IDS = [
     int(admin) for admin in environ.get("PAYMENT_ADMIN_IDS", "6046055058").split()
