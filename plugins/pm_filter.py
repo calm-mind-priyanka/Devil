@@ -1476,8 +1476,8 @@ async def cb_handler(client: Client, query: CallbackQuery):
         # buttons so a payment order can be tied to a Telegram user ID.
         plan_buttons = [
             [
-                InlineKeyboardButton("💳 𝟶𝟷 ᴡᴇᴇᴋ ₹𝟸𝟹", callback_data="buyplan_week"),
-                InlineKeyboardButton("💳 𝟶𝟷 ᴍᴏɴᴛʜ ₹𝟻𝟿", callback_data="buyplan_month"),
+                InlineKeyboardButton("💳 𝟶𝟷 ᴡᴇᴇᴋ ₹23", callback_data="buyplan_week"),
+                InlineKeyboardButton("💳 𝟶𝟷 ᴍᴏɴᴛʜ ₹59", callback_data="buyplan_month"),
             ],
             [
                 InlineKeyboardButton("💳 𝟶𝟹 ᴍᴏɴᴛʜ ₹𝟷𝟺𝟿", callback_data="buyplan_3month"),
