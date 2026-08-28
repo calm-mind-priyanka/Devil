@@ -497,18 +497,43 @@ async def process_payment_submission(payment_client, message):
             {"review_status": "manual_review_required"}
         )
         await db.update_order_payment_review(user_id, message.id, check)
+        # Build an admin-only verification report. Keep the exact technical reason
+        # visible to reviewers so they can understand why auto-approval stopped.
         reason = []
         if check["amount_match"] is False:
-            reason.append(f"amount mismatch (expected {order.get('plan_price')}, found {check['amount_found'] or 'unknown'})")
+            reason.append("Amount does not match the selected plan.")
         elif check["amount_match"] is None:
-            reason.append("amount could not be read")
+            reason.append("Payment amount could not be read confidently.")
         if check["time_match"] is False:
-            reason.append("transaction time/date is outside the allowed window")
+            reason.append("Transaction date/time is outside the allowed 10-minute window.")
         elif check["time_match"] is None:
-            reason.append("transaction time/date could not be read")
+            reason.append("Transaction date/time could not be read confidently.")
+        if check.get("success_signal") is False:
+            reason.append("A payment-success confirmation was not detected.")
         if check.get("duplicate_suspected"):
-            reason.append("same or very similar screenshot was already submitted")
-        reason_text = "; ".join(reason) or "additional verification required"
+            reason.append("The same or a very similar screenshot was already submitted.")
+        if check.get("ocr_status") == "disabled":
+            reason.append("OCR verification is disabled, so automatic evidence checks were unavailable.")
+        elif ocr_status == "download_failed":
+            reason.append("The screenshot could not be downloaded for analysis.")
+        elif ocr_status == "ocr_failed":
+            reason.append("OCR analysis failed while reading this screenshot.")
+        elif not reason:
+            reason.append("The available evidence did not reach the automatic approval threshold.")
+
+        lower = _naive_utc(order.get("order_created_at")) or received_at
+        upper = lower + datetime.timedelta(minutes=PAYMENT_MAX_DELAY_MINUTES)
+        amount_found = check.get("amount_found")
+        tx_at = check.get("transaction_at")
+        amount_result = "Matched" if check.get("amount_match") is True else ("Not matched" if check.get("amount_match") is False else "Not confidently detected")
+        time_result = "Within allowed window" if check.get("time_match") is True else ("Outside allowed window" if check.get("time_match") is False else "Not confidently detected")
+        success_result = "Detected" if check.get("success_signal") is True else ("Not detected" if check.get("success_signal") is False else "Not available")
+        duplicate_result = "Suspected duplicate" if check.get("duplicate_suspected") else "No duplicate detected"
+        ocr_result = str(ocr_status or "unknown").replace("_", " ").title()
+        confidence = check.get("confidence")
+        confidence_text = f"{confidence}%" if isinstance(confidence, (int, float)) else "N/A"
+        reasons_block = "\n".join(f"• {item}" for item in reason)
+
         sender_name = " ".join(part for part in [sender.first_name, sender.last_name] if part) or "Unknown"
         sender_username = f"@{sender.username}" if sender.username else "none"
         review_text = (
@@ -516,11 +541,22 @@ async def process_payment_submission(payment_client, message):
             f"👤 User: {escape(sender_name)}\n"
             f"🔗 Username: {escape(sender_username)}\n"
             f"🆔 User ID: <code>{user_id}</code>\n"
-            f"📦 Plan: {escape(order.get('plan_duration', 'N/A'))}\n"
-            f"💰 Expected: {escape(order.get('plan_price', 'N/A'))}\n"
-            f"🆔 Screenshot message: <code>{message.id}</code>\n"
-            f"⚠️ Reason: {escape(reason_text)}\n\n"
-            "Premium was <b>not</b> activated automatically."
+            f"📦 Plan: {escape(str(order.get('plan_duration', 'N/A')))}\n"
+            f"💰 Expected amount: {escape(str(order.get('plan_price', 'N/A')))}\n"
+            f"🆔 Screenshot message: <code>{message.id}</code>\n\n"
+            "<b>🔎 Automatic analysis report</b>\n"
+            f"• OCR status: {escape(ocr_result)}\n"
+            f"• Amount found: {escape(str(amount_found) if amount_found is not None else 'Not detected')}\n"
+            f"• Amount check: {escape(amount_result)}\n"
+            f"• Transaction date/time: {escape(_fmt_dt(tx_at) if tx_at else 'Not detected')}\n"
+            f"• Time check: {escape(time_result)}\n"
+            f"• Allowed window: {_fmt_dt(lower)} → {_fmt_dt(upper)} ({PAYMENT_MAX_DELAY_MINUTES} min)\n"
+            f"• Payment-success signal: {escape(success_result)}\n"
+            f"• Duplicate check: {escape(duplicate_result)}\n"
+            f"• Verification confidence: {escape(confidence_text)}\n\n"
+            "<b>⚠️ Exact reason(s) for manual review</b>\n"
+            f"{escape(reasons_block)}\n\n"
+            "Premium was <b>not</b> activated automatically. Please review the screenshot and choose Approve or Reject."
         )
         review_buttons = InlineKeyboardMarkup([
             [
