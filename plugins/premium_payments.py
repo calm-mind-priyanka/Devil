@@ -123,17 +123,17 @@ def _expected_amount(plan_price):
 
 
 def _extract_amount(text, expected):
-    """Extract the most plausible payment amount from varied OCR output.
+    """Extract the payment amount, preferring the selected plan value.
 
-    Payment apps often omit the currency symbol.  We therefore consider
-    standalone numeric candidates, currency-labelled candidates, and common
-    OCR corruptions.  A candidate matching the pending order amount is strongly
-    preferred, which prevents transaction/reference numbers from being chosen.
+    OCR often drops the rupee symbol or changes ``₹23.00`` into variants such
+    as ``23.00`` or ``23:00``.  Because the pending order already tells us the
+    exact expected value, we can safely prefer an exact expected-value token
+    while rejecting obvious date/time/reference-number forms.
     """
     if not text:
         return None
     expected = _money_number(expected)
-    normalized = text.replace("\u00a0", " ")
+    normalized = text.replace("\u00a0", " ").replace("₹", " Rs ")
     lines = [re.sub(r"\s+", " ", x.strip()) for x in normalized.splitlines() if x.strip()]
     candidates = []
 
@@ -142,35 +142,56 @@ def _extract_amount(text, expected):
             return
         candidates.append((round(value, 2), score, source))
 
-    currency_patterns = [
-        r"(?:₹|rs\.?|inr)\s*([0-9][0-9,]*(?:[.]\d{1,2})?)",
-        r"(?:amount\s*(?:paid|sent|debited|received)?|paid\s*(?:amount)?|sent\s*amount|total|payment)\D{0,40}([0-9][0-9,]*(?:[.]\d{1,2})?)",
+    # Currency/amount-labelled forms.
+    patterns = [
+        r"(?:Rs\.?|INR)\s*([0-9][0-9,]*(?:[.,:]\d{1,2})?)",
+        r"(?:amount\s*(?:paid|sent|debited|received)?|paid\s*(?:amount)?|sent\s*amount|total|payment|debited|credited)\D{0,50}([0-9][0-9,]*(?:[.]\d{1,2})?)",
     ]
     for line in lines:
-        for pat in currency_patterns:
+        for pat in patterns:
             for m in re.finditer(pat, line, re.I):
-                add(_money_number(m.group(1)), 100, "labelled")
+                raw = m.group(1).replace(',', '')
+                # OCR can turn a decimal point into a colon.
+                raw = re.sub(r'^(\d+):(\d{1,2})$', r'\1.\2', raw)
+                add(_money_number(raw), 120, "labelled")
 
-    # Standalone amount lines. OCR may turn ₹23.00 into <23:00.
+    # Exact expected amount on a line, with optional currency/OCR punctuation.
+    if expected is not None:
+        whole = str(int(expected)) if expected.is_integer() else str(expected)
+        dec = f"{expected:.2f}"
+        expected_forms = {whole, dec, dec.replace('.', ','), dec.replace('.', ':'), whole + '.00', whole + ',00', whole + ':00'}
+        for line in lines:
+            # Do not accept a time/date token as an amount.
+            if re.search(r"\b\d{1,2}\s*[:.]\s*\d{2}\s*(?:AM|PM)?\b", line, re.I):
+                # Still allow the line if it explicitly contains a currency or amount label.
+                explicit = bool(re.search(r"\b(?:rs|inr|amount|paid|sent|debited|credited|total|payment)\b", line, re.I))
+                if not explicit:
+                    continue
+            for form in sorted(expected_forms, key=len, reverse=True):
+                if re.search(rf"(?<!\d){re.escape(form)}(?!\d)", line, re.I):
+                    add(expected, 300, "expected_exact")
+                    break
+
+    # Standalone numeric amount lines. This handles OCR that removes ₹/Rs.
     for line in lines:
         stripped = line.strip()
-        m = re.fullmatch(r"[^0-9]{0,8}(\d{1,7})(?:[.,:]([0-9]{1,2}))?[^0-9]{0,8}", stripped)
+        m = re.fullmatch(r"[^0-9]{0,10}(\d{1,7})(?:[.,:]([0-9]{1,2}))?[^0-9]{0,10}", stripped)
         if m:
             whole, frac = m.groups()
             value = float(f"{whole}.{frac}") if frac is not None else float(whole)
-            add(value, 85, "standalone")
+            # A colon with exactly two digits is usually a time unless the
+            # value equals the expected amount and is an amount-labelled line.
+            if ':' in stripped and expected is not None and abs(value - expected) >= 0.01:
+                continue
+            add(value, 90, "standalone")
 
-    # A bare amount can be embedded beside a payment label.
-    for line in lines:
-        if re.search(r"\b(?:amount|paid|sent|received|debited|credited|total|payment)\b", line, re.I):
-            for token in re.findall(r"(?<!\d)\d{1,7}(?:[.]\d{1,2})?(?!\d)", line):
-                add(_money_number(token), 80, "labelled_bare")
-
-    # If OCR removed line breaks, search the whole OCR text for currency forms.
+    # If OCR collapsed everything onto one line, use currency/labelled matches.
     flat = re.sub(r"\s+", " ", normalized)
-    for pat in currency_patterns:
+    for pat in patterns:
         for m in re.finditer(pat, flat, re.I):
-            add(_money_number(m.group(1)), 95, "flat_labelled")
+            raw = m.group(1).replace(',', '')
+            raw = re.sub(r'^(\d+):(\d{1,2})$', r'\1.\2', raw)
+            add(_money_number(raw), 100, "flat_labelled")
 
     if not candidates:
         return None
@@ -309,7 +330,7 @@ def _payment_match_result(order, ocr_text, received_at):
     }
 
 
-async def _ocr_payment_message(payment_client, message):
+async def _ocr_payment_message(payment_client, message, expected_amount=None):
     if not PAYMENT_OCR_ENABLED:
         return "", "disabled", None, None
     try:
@@ -321,10 +342,18 @@ async def _ocr_payment_message(payment_client, message):
         sha256 = hashlib.sha256(blob).hexdigest()
         image = Image.open(io.BytesIO(blob)).convert("RGB")
         image = ImageOps.exif_transpose(image)
-        image.thumbnail((2600, 2600))
+        image.thumbnail((3200, 3200))
         gray = ImageOps.autocontrast(ImageOps.grayscale(image))
         gray = gray.filter(ImageFilter.SHARPEN)
+        # Upscale small payment-app text before OCR. Keep several variants so
+        # both dark/light themes and faint date/amount text have a chance.
+        scale = 2 if max(gray.size) < 2600 else 1
+        if scale > 1:
+            gray = gray.resize((gray.width * scale, gray.height * scale), Image.Resampling.LANCZOS)
         variants = [gray, ImageOps.invert(gray)]
+        # Add high-contrast threshold variants for screenshots with grey text.
+        variants.append(gray.point(lambda p: 255 if p > 165 else 0))
+        variants.append(gray.point(lambda p: 255 if p > 205 else 0))
         texts = []
         for variant in variants:
             for psm in (6, 11, 12):
@@ -334,6 +363,58 @@ async def _ocr_payment_message(payment_client, message):
                         texts.append(value.strip())
                 except Exception:
                     continue
+
+        # Payment apps render the large amount very differently.  A normal
+        # full-page OCR pass can read the date perfectly but misread the large
+        # rupee amount (for example, ``₹23.00`` may become ``x23,/00`` or
+        # ``223``).  Run a second, digits-only pass over several central bands
+        # where payment apps normally display the amount.  image_to_data gives
+        # us the text height, so a large numeric token is preferred over small
+        # phone/reference numbers.  The result is appended as an OCR hint; the
+        # existing parser still performs the final amount comparison.
+        expected_num = _money_number(expected_amount)
+        if expected_num is not None:
+            whole = str(int(expected_num)) if expected_num.is_integer() else str(expected_num)
+            amount_hints = []
+            for top_ratio, bottom_ratio in ((0.12, 0.55), (0.18, 0.60), (0.24, 0.66)):
+                try:
+                    crop = gray.crop((0, int(gray.height * top_ratio), gray.width, int(gray.height * bottom_ratio)))
+                    crop = ImageOps.autocontrast(crop)
+                    crop = crop.resize((crop.width * 2, crop.height * 2), Image.Resampling.LANCZOS)
+                    data = pytesseract.image_to_data(
+                        crop,
+                        config="--psm 11 -c tessedit_char_whitelist=0123456789.,:",
+                        output_type=pytesseract.Output.DICT,
+                        timeout=12,
+                    )
+                    for i, token in enumerate(data.get("text", [])):
+                        token = re.sub(r"[^0-9.,:]", "", str(token))
+                        if not token or not re.search(r"\d", token):
+                            continue
+                        try:
+                            height = int(data["height"][i])
+                            top = int(data["top"][i])
+                        except Exception:
+                            height, top = 0, 0
+                        compact = token.replace(",", ".")
+                        # Exact expected value is strongest.  Also handle a
+                        # common OCR artefact where the rupee glyph becomes a
+                        # leading ``2`` (₹23 -> 223, ₹24 -> 224, etc.).
+                        is_expected = False
+                        try:
+                            is_expected = abs(float(compact) - expected_num) < 0.01
+                        except ValueError:
+                            pass
+                        if not is_expected and token == ("2" + whole):
+                            is_expected = True
+                        if is_expected:
+                            amount_hints.append((height, -top, whole + ".00"))
+                except Exception:
+                    continue
+            if amount_hints:
+                amount_hints.sort(reverse=True)
+                texts.append(f"Amount OCR candidate: {amount_hints[0][2]}")
+
         # Keep unique OCR outputs together so the amount/date-time parser has multiple OCR readings to choose from.
         text = "\n".join(dict.fromkeys(texts))[:12000]
         small = ImageOps.fit(gray, (32, 32))
@@ -443,6 +524,7 @@ async def _activate_order(client, order, screenshot_message_id, manual_pending=F
                 break
     if not plan_key or plan_key not in PREMIUM_PLANS:
         raise RuntimeError(f"Unknown Premium plan on payment order: {raw_plan or order.get('plan_duration')!r}")
+    plan = PREMIUM_PLANS[plan_key]
 
     # Renewal rule: preserve remaining time. If current Premium is active,
     # add the selected duration to its existing expiry instead of overwriting it.
@@ -517,6 +599,16 @@ async def process_payment_submission(payment_client, message):
         file_unique_id = message.document.file_unique_id
 
     order = await db.get_pending_premium_order(user_id)
+    # If this user already submitted a screenshot and it is waiting for review,
+    # keep using that exact order instead of incorrectly reporting "no pending
+    # order" on a retry. A newly selected plan always replaces the old order
+    # and returns to waiting_for_payment.
+    if not order:
+        existing_order = await db.get_premium_order(user_id)
+        if existing_order and existing_order.get("payment_status") in (
+            "pending_manual_verification", "manual_review_required"
+        ):
+            order = existing_order
     submission = {
         "user_id": user_id,
         "username": sender.username or "",
@@ -536,7 +628,9 @@ async def process_payment_submission(payment_client, message):
 
     # Download once to retain exact/perceptual duplicate protection. The same
     # screenshot must never be processed repeatedly as a fresh payment.
-    ocr_text, ocr_status, file_sha256, perceptual_hash = await _ocr_payment_message(payment_client, message)
+    ocr_text, ocr_status, file_sha256, perceptual_hash = await _ocr_payment_message(
+        payment_client, message, expected_amount=order.get("plan_price")
+    )
     duplicate = await db.find_duplicate_payment_submission(file_sha256, perceptual_hash, user_id, message.id)
     if duplicate and not order:
         await db.update_payment_submission(
@@ -641,17 +735,13 @@ async def process_payment_submission(payment_client, message):
             f"📦 Plan: {escape(str(order.get('plan_duration', 'N/A')))}\n"
             f"💰 Expected amount: {escape(str(order.get('plan_price', 'N/A')))}\n"
             f"🆔 Screenshot message: <code>{message.id}</code>\n\n"
-            "<b>🔎 Automatic analysis report</b>\n"
-            f"• OCR status: {escape(ocr_result)}\n"
-            f"• Amount found: {escape(str(amount_found) if amount_found is not None else 'Not detected')}\n"
-            f"• Amount check: {escape(amount_result)}\n"
-            f"• Transaction date/time: {escape(_fmt_dt(tx_at) if tx_at else 'Not detected')}\n"
-            f"• Time check: {escape(time_result)}\n"
-            f"• Allowed window: {_fmt_dt(lower)} → {_fmt_dt(upper)} ({PAYMENT_MAX_DELAY_MINUTES} min)\n"
-            f"• Duplicate check: {escape(duplicate_result)}\n\n"
-            "<b>⚠️ Exact reason(s) for manual review</b>\n"
+            "<b>🔎 Automatic verification</b>\n"
+            f"• 💰 Amount: {escape(str(amount_found) if amount_found is not None else 'Not detected')} → {escape(amount_result)}\n"
+            f"• 📅 Transaction: {escape(_fmt_dt(tx_at) if tx_at else 'Not detected')} → {escape(time_result)}\n"
+            f"• ⏰ Allowed age: {PAYMENT_MAX_DELAY_MINUTES} minutes\n\n"
+            "<b>⚠️ Manual review reason</b>\n"
             f"{escape(reasons_block)}\n\n"
-            "Premium has been activated temporarily. Please check the screenshot and use REJECT if the payment is fake or invalid."
+            "Premium has been activated temporarily. Check the screenshot yourself. If it is genuine, press APPROVE; if fake or invalid, press REJECT."
         )
         review_buttons = InlineKeyboardMarkup([
             [
@@ -1145,7 +1235,11 @@ def register_payment_bot_handlers(payment_client):
             # already activated temporarily; only finalize its status here.
             if order and int(order.get("screenshot_message_id") or -1) == screenshot_message_id:
                 await db.approve_manual_payment(user_id, screenshot_message_id)
-            await _send_premium_success_message(client, order or submission, user_id)
+            approved_order = await db.get_premium_order(user_id)
+            await _send_premium_success_message(
+                client, approved_order or order or submission, user_id,
+                expires_at=_naive_utc((approved_order or order or {}).get("expires_at"))
+            )
             text = (
                 f"✅ <b>Payment manually verified</b>\n\n"
                 f"User ID: <code>{user_id}</code>\n"
