@@ -337,7 +337,11 @@ class Database:
                 return False
             elif (
                 isinstance(expiry_time, datetime.datetime)
-                and datetime.datetime.now() <= expiry_time
+                and (
+                    (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) <= expiry_time)
+                    if expiry_time.tzinfo is None
+                    else datetime.datetime.now(datetime.timezone.utc) <= expiry_time
+                )
             ):
                 return True
             else:
