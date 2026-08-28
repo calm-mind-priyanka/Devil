@@ -408,7 +408,11 @@ async def start(client: Client, message):
             return
 
     user_id = m.from_user.id
-    if not await db.has_premium_access(user_id):
+    # Premium users must reach the final file-delivery stage directly.
+    # Keep the existing force-subscription rules, but never run File Mode /
+    # VERIFY / SHORTLINK verification for an active Premium user.
+    premium_active = await db.has_premium_access(user_id)
+    if not premium_active:
         grp_id = int(grp_id)
         print(f"Group Id - {grp_id}")
         user_verified = await db.is_user_verified(user_id)
@@ -526,10 +530,13 @@ async def start(client: Client, message):
         files_to_delete = []
         delete_delay = None
         auto_delete_enabled = False
+        # Premium users can arrive here without a verification session, so
+        # temp.CHAT may not contain their user id. Always use the group id
+        # encoded in the start payload.
+        delivery_grp_id = int(grp_id)
+        settings = await get_settings(delivery_grp_id)
         for file in files:
             user_id = message.from_user.id
-            grp_id = temp.CHAT.get(user_id)
-            settings = await get_settings(grp_id)
             auto_delete_enabled = bool(settings.get("auto_delete", False))
             try:
                 delete_delay = max(1, int(settings.get("delete_time", FILE_AUTO_DEL_TIMER)))
