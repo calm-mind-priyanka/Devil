@@ -417,6 +417,7 @@ class Database:
             unique=True,
         )
         await self.payment_submissions.create_index("user_id")
+        await self.payment_submissions.create_index("file_sha256")
 
     async def create_or_update_premium_order(self, user_id, username, plan,
                                              plan_duration, plan_price):
@@ -488,6 +489,31 @@ class Database:
             "user_id": int(user_id),
             "payment_bot_message_id": int(message_id),
         })
+
+    async def find_duplicate_payment_submission(self, file_sha256, perceptual_hash, user_id, message_id):
+        if file_sha256:
+            row = await self.payment_submissions.find_one({
+                "file_sha256": file_sha256,
+                "$or": [{"user_id": {"$ne": int(user_id)}}, {"payment_bot_message_id": {"$ne": int(message_id)}}],
+            })
+            if row:
+                return row
+        if not perceptual_hash:
+            return None
+        # Compare a recent bounded set so near-identical crops/resizes can be flagged
+        # without scanning an unbounded collection. Flag for manual review, never auto-reject.
+        cursor = self.payment_submissions.find({"perceptual_hash": {"$exists": True}}).sort("received_at", -1).limit(300)
+        async for row in cursor:
+            other = row.get("perceptual_hash")
+            if not other or row.get("user_id") == int(user_id) and row.get("payment_bot_message_id") == int(message_id):
+                continue
+            try:
+                distance = sum(a != b for a, b in zip(bin(int(perceptual_hash, 16))[2:].zfill(1024), bin(int(other, 16))[2:].zfill(1024)))
+                if distance <= 8:
+                    return row
+            except Exception:
+                continue
+        return None
 
     async def update_order_payment_review(self, user_id, message_id, check):
         return await self.premium_orders.update_one(
