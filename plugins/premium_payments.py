@@ -14,10 +14,8 @@ from html import escape
 import pytz
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from PIL import Image, ImageOps, ImageFilter
+from PIL import Image, ImageOps, ImageFilter, ImageEnhance
 import pytesseract
-import cv2
-import numpy as np
 
 from info import (
     ADMINS,
@@ -279,7 +277,9 @@ def _payment_success_signal(text):
 def _payment_match_result(order, ocr_text, received_at):
     expected = _expected_amount(order.get("plan_price"))
     found = _extract_amount(ocr_text, expected)
-    amount_match = found is not None and expected is not None and abs(found - expected) < 0.01
+    # Detection and comparison are separate.  None means the bot could not
+    # read an amount; False means it actually read an amount and it was wrong.
+    amount_match = None if found is None else (expected is not None and abs(found - expected) < 0.01)
     # _parse_transaction_datetime returns (datetime, confidently_parsed).
     # Unpack it before timezone conversion; treating the tuple itself as a
     # datetime caused the deployed bot to crash with: tuple has no attribute
@@ -298,7 +298,7 @@ def _payment_match_result(order, ocr_text, received_at):
         time_match = lower <= tx_dt <= upper
         time_note = f"Transaction time: {_fmt_dt(tx_dt)}"
 
-    success_signal = _payment_success_signal(ocr_text)
+    success_signal = _payment_success_signal(ocr_text) if ocr_text else None
     if not PAYMENT_OCR_ENABLED:
         return True, {"ocr_status": "disabled", "amount_found": found, "amount_match": None,
                       "transaction_at": tx_dt, "time_match": None, "success_signal": None,
@@ -321,11 +321,19 @@ def _payment_match_result(order, ocr_text, received_at):
         "transaction_at": tx_dt, "time_match": time_match,
         "success_signal": success_signal, "confidence": score,
         "time_note": time_note,
+        "date_detected": tx_dt.date().isoformat() if tx_dt else None,
+        "time_detected": tx_dt.strftime("%I:%M %p") if tx_dt else None,
     }
 
 
 async def _ocr_payment_message(payment_client, message):
-    """Run several OCR passes so different PhonePe/Paytm screenshot layouts are readable."""
+    """Read payment screenshots with PIL/Tesseract only.
+
+    Do not import OpenCV/NumPy here: the bot must be able to start on the
+    existing Heroku/Python environment.  Several PIL variants are sent to
+    Tesseract so PhonePe/Paytm screenshots with different scaling, contrast,
+    and dark/light backgrounds get multiple chances to be read.
+    """
     if not PAYMENT_OCR_ENABLED:
         return "", "disabled", None, None
     try:
@@ -336,33 +344,71 @@ async def _ocr_payment_message(payment_client, message):
         blob = raw.read()
         sha256 = hashlib.sha256(blob).hexdigest()
         image = ImageOps.exif_transpose(Image.open(io.BytesIO(blob)).convert("RGB"))
-        image.thumbnail((3000, 3000))
-        rgb = np.asarray(image)
-        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-        variants = [gray, ImageOps.autocontrast(Image.fromarray(gray)).__array__()]
-        for scale in (1.5, 2.0):
-            r = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-            blur = cv2.GaussianBlur(r, (3, 3), 0)
-            variants.extend([r, cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
-                             cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 11)])
-        variants.append(cv2.bitwise_not(gray))
-        texts=[]
+        image.thumbnail((3200, 3200))
+
+        gray = ImageOps.grayscale(image)
+        # Keep the original plus several high-resolution/contrast variants.
+        variants = [gray]
+        for scale in (1.5, 2.0, 2.5):
+            w = max(1, int(gray.width * scale))
+            h = max(1, int(gray.height * scale))
+            enlarged = gray.resize((w, h), Image.Resampling.LANCZOS)
+            sharp = enlarged.filter(ImageFilter.SHARPEN).filter(ImageFilter.SHARPEN)
+            contrast = ImageEnhance.Contrast(sharp).enhance(1.8)
+            variants.extend([enlarged, contrast, ImageOps.autocontrast(contrast)])
+            # Simple PIL threshold; avoids OpenCV completely.
+            for threshold in (150, 190):
+                bw = ImageOps.autocontrast(contrast).point(
+                    lambda px, t=threshold: 255 if px >= t else 0
+                )
+                variants.append(bw)
+        variants.append(ImageOps.invert(gray))
+
+        texts = []
+        successful_passes = 0
         for variant in variants:
             for psm in (6, 11, 12, 3):
                 try:
-                    value=pytesseract.image_to_string(variant, config=f"--oem 3 --psm {psm}", timeout=15)
-                    if value and value.strip(): texts.append(value.strip())
-                except Exception:
-                    pass
-        text="\n".join(dict.fromkeys(texts))[:24000]
-        small=cv2.resize(gray,(32,32),interpolation=cv2.INTER_AREA)
-        avg=float(small.mean())
-        bits=''.join('1' if int(px)>=avg else '0' for px in small.flatten())
-        perceptual=hex(int(bits,2))[2:].zfill(256)
-        return text,"ok",sha256,perceptual
+                    value = pytesseract.image_to_string(
+                        variant,
+                        config=f"--oem 3 --psm {psm}",
+                        timeout=15,
+                    )
+                    if value and value.strip():
+                        successful_passes += 1
+                        texts.append(value.strip())
+                except Exception as exc:
+                    LOGGER.debug("Tesseract pass failed: %s", exc)
+
+        # Also try a Hindi/English-friendly data pass when available; this can
+        # expose short numeric fields that a plain text pass misses.
+        try:
+            data_text = pytesseract.image_to_data(
+                ImageOps.autocontrast(gray),
+                config="--oem 3 --psm 11",
+                output_type=pytesseract.Output.DICT,
+                timeout=15,
+            )
+            words = [x.strip() for x in data_text.get("text", []) if x and x.strip()]
+            if words:
+                texts.append(" ".join(words))
+                successful_passes += 1
+        except Exception as exc:
+            LOGGER.debug("Tesseract data pass failed: %s", exc)
+
+        text = "\n".join(dict.fromkeys(texts))[:30000]
+        # Stable exact duplicate fingerprint.  The fuzzy duplicate check in
+        # the DB receives this in addition to the original SHA-256.
+        tiny = ImageOps.grayscale(image).resize((32, 32), Image.Resampling.LANCZOS)
+        pixels = list(tiny.getdata())
+        avg = sum(pixels) / len(pixels)
+        bits = ''.join('1' if px >= avg else '0' for px in pixels)
+        perceptual = hex(int(bits, 2))[2:].zfill(256)
+        status = "ok" if text else "ocr_failed"
+        return text, status, sha256, perceptual
     except Exception:
         LOGGER.exception("Payment screenshot OCR failed.")
-        return "","ocr_failed",None,None
+        return "", "ocr_failed", None, None
 
 
 async def _activate_order(client, order, screenshot_message_id):
@@ -566,9 +612,9 @@ async def process_payment_submission(payment_client, message):
         # visible to reviewers so they can understand why auto-approval stopped.
         reason = []
         if check["amount_match"] is False:
-            reason.append("Amount does not match the selected plan.")
+            reason.append("The detected amount does not match the selected plan.")
         elif check["amount_match"] is None:
-            reason.append("Payment amount could not be read confidently.")
+            reason.append("The payment amount was not detected in the screenshot.")
         if check["time_match"] is False:
             reason.append("Transaction date/time is outside the allowed 10-minute window.")
         elif check["time_match"] is None:
@@ -610,18 +656,21 @@ async def process_payment_submission(payment_client, message):
             f"💰 Expected amount: {escape(str(order.get('plan_price', 'N/A')))}\n"
             f"🆔 Screenshot message: <code>{message.id}</code>\n\n"
             "<b>🔎 Automatic analysis report</b>\n"
-            f"• OCR status: {escape(ocr_result)}\n"
-            f"• Amount found: {escape(str(amount_found) if amount_found is not None else 'Not detected')}\n"
-            f"• Amount check: {escape(amount_result)}\n"
-            f"• Transaction date/time: {escape(_fmt_dt(tx_at) if tx_at else 'Not detected')}\n"
-            f"• Time check: {escape(time_result)}\n"
+            f"• OCR engine: {escape(str(ocr_status or 'unknown').replace('_', ' ').title())}\n"
+            f"• Analysis result: {escape(ocr_result)}\n"
+            f"• Amount detected: {escape(str(amount_found) if amount_found is not None else 'NOT DETECTED')}\n"
+            f"• Amount comparison: {escape(amount_result)}\n"
+            f"• Date detected: {escape(tx_at.strftime('%d %B %Y') if tx_at else 'NOT DETECTED')}\n"
+            f"• Time detected: {escape(tx_at.strftime('%I:%M %p') if tx_at else 'NOT DETECTED')}\n"
+            f"• Date/time comparison: {escape(time_result)}\n"
             f"• Allowed window: {_fmt_dt(lower)} → {_fmt_dt(upper)} ({PAYMENT_MAX_DELAY_MINUTES} min)\n"
             f"• Payment-success signal: {escape(success_result)}\n"
             f"• Duplicate check: {escape(duplicate_result)}\n"
-            f"• Verification confidence: {escape(confidence_text)}\n\n"
+            f"• Verification confidence: {escape(confidence_text)}\n"
+            f"• OCR text read: <code>{escape((ocr_text[:900] if ocr_text else 'NO TEXT READ'))}</code>\n\n"
             "<b>⚠️ Exact reason(s) for manual review</b>\n"
             f"{escape(reasons_block)}\n\n"
-            f"Premium has been <b>activated temporarily</b> until {_fmt_dt(review_expiry)}. Please review the screenshot and choose Approve or Reject."
+            "Premium has been <b>activated for manual review</b> and will remain active until the owner approves or rejects this screenshot. Please review the screenshot and choose Approve or Reject."
         )
         review_buttons = InlineKeyboardMarkup([
             [
@@ -647,7 +696,7 @@ async def process_payment_submission(payment_client, message):
         try:
             await message.reply_text(
                 "🟡 <b>Payment screenshot received successfully.</b>\n\n"
-                "Your screenshot could not be auto-approved, but temporary Premium access has been enabled while the owner reviews it. ⏳"
+                "Your screenshot could not be auto-approved, but Premium access has been enabled while the owner reviews it. You will keep access until the owner approves or rejects the payment."
             )
         except Exception:
             pass
@@ -673,12 +722,35 @@ async def process_payment_submission(payment_client, message):
     except Exception as exc:
         LOGGER.warning("Could not copy payment screenshot to LOG_CHANNEL: %s", exc)
 
+    # Keep the successful path observable too: the owner can see exactly what
+    # the analyzer read before the strict comparison approved the payment.
+    tx_at = check.get("transaction_at")
+    detected_report = (
+        "🟢 <b>Automatic payment verification passed</b>\n\n"
+        f"👤 User ID: <code>{user_id}</code>\n"
+        f"📦 Plan: {escape(str(order.get('plan_duration', 'N/A')))}\n"
+        f"💰 Expected: {escape(str(order.get('plan_price', 'N/A')))}\n"
+        f"💰 Amount detected: <b>{escape(str(check.get('amount_found')))}</b> → MATCH\n"
+        f"📅 Date detected: <b>{escape(tx_at.strftime('%d %B %Y') if tx_at else 'NOT DETECTED')}</b>\n"
+        f"⏰ Time detected: <b>{escape(tx_at.strftime('%I:%M %p') if tx_at else 'NOT DETECTED')}</b> → MATCH\n"
+        f"🔁 Duplicate: {'YES' if check.get('duplicate_suspected') else 'NO'}\n"
+        f"📝 OCR text read: <code>{escape((ocr_text[:900] if ocr_text else 'NO TEXT READ'))}</code>"
+    )
+    await _notify_admins(payment_client, detected_report)
+
     await _activate_order(payment_client, claimed, message.id)
 
 
-async def _grant_review_access(user_id, order, minutes=10):
-    """Grant short real Premium access using the same users.uersz record as /add_premium."""
-    now=_now(); expires=now+datetime.timedelta(minutes=minutes)
+async def _grant_review_access(user_id, order, minutes=None):
+    """Grant real Premium access for the whole manual-review period.
+
+    Review access is deliberately not a 10-minute Premium subscription.  The
+    review state lives in premium_orders; access remains active until the
+    owner approves (which converts it to the selected plan) or rejects (which
+    removes it).  This uses the exact same users collection as /add_premium.
+    """
+    now = _now()
+    expires = LIFETIME_EXPIRY
     await db.update_user({
         "id": int(user_id),
         "expiry_time": expires,
@@ -688,9 +760,14 @@ async def _grant_review_access(user_id, order, minutes=10):
     })
     await db.premium_orders.update_one(
         {"user_id": int(user_id)},
-        {"$set": {"premium_status":"active", "temporary_review_access":True,
-                  "temporary_review_expires_at":expires, "payment_status":"manual_review_required",
-                  "expires_at":expires}},
+        {"$set": {
+            "premium_status": "active",
+            "temporary_review_access": True,
+            "temporary_review_expires_at": None,
+            "payment_status": "manual_review_required",
+            "expires_at": expires,
+            "review_started_at": now,
+        }},
     )
     return expires
 
