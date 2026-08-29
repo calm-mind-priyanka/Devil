@@ -93,6 +93,16 @@ def _admins():
     return set(ADMINS) | set(PAYMENT_ADMIN_IDS)
 
 
+def _contact_admin_markup():
+    """Return a direct contact button for the first configured payment admin."""
+    admin_ids = sorted(_admins())
+    if not admin_ids:
+        return None
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("💬 CONTACT ADMIN", url=f"tg://user?id={admin_ids[0]}")]]
+    )
+
+
 def _plan_key(value):
     value = str(value).lower().strip()
     aliases = {
@@ -764,8 +774,15 @@ async def process_payment_submission(payment_client, message):
         return
 
     ocr_text, ocr_status, file_sha256, perceptual_hash = await _ocr_payment_message(payment_client, message)
-    duplicate = await db.find_duplicate_payment_submission(file_sha256, perceptual_hash, user_id, message.id)
     passed, check = _payment_match_result(order, ocr_text, received_at)
+
+    # A perceptual image hash alone is too aggressive: two genuinely different
+    # payment screenshots can look almost identical except for the transaction
+    # time or other small text. Only treat an exact file match as an automatic
+    # duplicate. Similar-image matches require the OCR transaction details to
+    # agree as well, so a new payment with a different transaction time is not
+    # incorrectly sent to manual review.
+    duplicate = await db.find_duplicate_payment_submission(file_sha256, None, user_id, message.id)
     if duplicate:
         passed = False
         check["duplicate_suspected"] = True
@@ -893,9 +910,23 @@ async def process_payment_submission(payment_client, message):
             except Exception as exc:
                 LOGGER.warning("Could not send manual payment review to %s: %s", admin_id, exc)
         try:
+            plan_key = _plan_key(order.get("selected_plan"))
+            plan = PREMIUM_PLANS.get(plan_key, {}) if plan_key else {}
+            activated_at = order.get("review_started_at") or _now()
+            user_text = (
+                "⚠️ <b>Premium Activated — Payment Under Review</b>\n\n"
+                f"📦 Plan: {escape(str(plan.get('name') or order.get('plan_duration', 'N/A')))}\n"
+                f"⏳ Duration: {escape(str(plan.get('duration') or order.get('plan_duration', 'N/A')))}\n"
+                f"📅 Activated: {_fmt_dt(activated_at)}\n"
+                f"⏳ Expires: {_fmt_dt(review_expiry)}\n"
+                "🟢 Status: Active\n\n"
+                "Your payment screenshot could not be automatically approved and has been sent to the admin for manual review. "
+                "Your selected Premium plan is already active. If the payment or screenshot is found to be invalid or misleading, this Premium access may be removed."
+            )
             await message.reply_text(
-                "🟡 <b>Payment screenshot received successfully.</b>\n\n"
-                "Your screenshot could not be auto-approved, but the selected Premium plan has been enabled while the owner reviews it. This access is not permanent."
+                user_text,
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=_contact_admin_markup(),
             )
         except Exception:
             pass
@@ -1398,7 +1429,32 @@ def register_payment_bot_handlers(payment_client):
                 order = await db.get_premium_order(user_id)
                 if not order:
                     raise RuntimeError("Premium order disappeared during approval")
-                await _activate_order(client, order, screenshot_message_id)
+
+                # The selected plan was already activated for this exact manual review.
+                # Approval confirms the payment only; it must not restart or extend expiry.
+                if not (
+                    order.get("temporary_review_access") is True
+                    and str(order.get("premium_status") or "").lower() == "active"
+                ):
+                    await _activate_order(client, order, screenshot_message_id)
+                else:
+                    await db.premium_orders.update_one(
+                        {"user_id": user_id, "screenshot_message_id": screenshot_message_id},
+                        {"$set": {
+                            "payment_status": "manually_verified",
+                            "temporary_review_access": False,
+                            "temporary_review_expires_at": None,
+                        }},
+                    )
+                    try:
+                        await client.send_message(
+                            user_id,
+                            "✅ <b>Payment Approved Successfully!</b>\n\n"
+                            "Your payment has been confirmed. Your existing Premium plan and expiry date remain unchanged.",
+                            parse_mode=enums.ParseMode.HTML,
+                        )
+                    except Exception:
+                        pass
             except Exception as exc:
                 LOGGER.exception("Manual Premium activation failed for %s", user_id)
                 # Never leave a review falsely approved when activation failed.
@@ -1457,9 +1513,11 @@ def register_payment_bot_handlers(payment_client):
             try:
                 await client.send_message(
                     user_id,
-                    "❌ <b>Your payment screenshot was rejected after manual review.</b>\n"
+                    "❌ <b>Your payment screenshot was rejected after manual review.</b>\n\n"
+                    "The Premium access added for this payment has been removed. "
                     "Please contact the admin if you think this is a mistake.",
                     parse_mode=enums.ParseMode.HTML,
+                    reply_markup=_contact_admin_markup(),
                 )
             except Exception:
                 pass
