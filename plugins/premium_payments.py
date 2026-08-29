@@ -12,6 +12,7 @@ import re
 import os
 import shutil
 import subprocess
+import time
 from html import escape
 
 import pytz
@@ -30,6 +31,9 @@ from info import (
     PAYMENT_OCR_ENABLED,
     PAYMENT_MAX_DELAY_MINUTES,
     PAYMENT_FUTURE_TOLERANCE_MINUTES,
+    PAYMENT_TIME_APPROVAL_ENABLED,
+    PAYMENT_OCR_PASS_TIMEOUT,
+    PAYMENT_OCR_JOB_TIMEOUT_SECONDS,
     API_ID,
     API_HASH,
 )
@@ -325,27 +329,36 @@ def _payment_success_signal(text):
 
 
 def _payment_match_result(order, ocr_text, received_at):
-    """Match a payment using only amount + transaction date.
+    """Match payment evidence without trusting OCR blindly.
 
-    Transaction *time* is intentionally not part of approval. Time OCR is too
-    unreliable and previously caused valid screenshots to be rejected or the
-    wrong time to be selected. The plan is already known from the pending order,
-    so the expected amount comes from that selected plan.
+    Amount is always required. The OCR transaction date is anchored to when the
+    screenshot was received, not when the user originally opened the order.
+    Optional timestamp approval checks the full date+time against a bounded
+    window and therefore also catches wrong day/month/year selections.
     """
     expected = _expected_amount(order.get("plan_price"))
     found = _extract_amount(ocr_text, expected)
     amount_match = None if found is None else (expected is not None and abs(found - expected) < 0.01)
 
-    expected_dt = _naive_utc(order.get("order_created_at")) or received_at
-    expected_date = expected_dt.astimezone(IST).date() if expected_dt.tzinfo else expected_dt.date()
     parsed_tx_dt, parsed_confident = _parse_transaction_datetime(ocr_text, received_at, expected)
     tx_dt = parsed_tx_dt if parsed_confident else None
+    reference = _aware_ist(received_at)
     date_match = None
+    time_match = None
     date_note = "Transaction date could not be read."
-    if tx_dt is not None:
-        detected_date = tx_dt.date()
-        date_match = detected_date == expected_date
-        date_note = f"Transaction date: {detected_date.isoformat()}"
+
+    if tx_dt is not None and reference is not None:
+        tx_aware = IST.localize(tx_dt) if tx_dt.tzinfo is None else tx_dt.astimezone(IST)
+        # Date is tied to the screenshot submission, avoiding stale order-created
+        # dates and UTC/IST day-boundary errors.
+        date_match = tx_aware.date() == reference.date()
+        date_note = f"Transaction date: {tx_aware.date().isoformat()}"
+        if PAYMENT_TIME_APPROVAL_ENABLED:
+            earliest = reference - datetime.timedelta(minutes=PAYMENT_MAX_DELAY_MINUTES)
+            latest = reference + datetime.timedelta(minutes=PAYMENT_FUTURE_TOLERANCE_MINUTES)
+            time_match = earliest <= tx_aware <= latest
+    elif tx_dt is not None:
+        date_match = True
 
     success_signal = _payment_success_signal(ocr_text) if ocr_text else None
     if not PAYMENT_OCR_ENABLED:
@@ -353,20 +366,22 @@ def _payment_match_result(order, ocr_text, received_at):
                       "transaction_at": tx_dt, "date_match": None, "time_match": None,
                       "success_signal": None, "confidence": 0, "date_note": "OCR checks disabled; sender/order matching used."}
 
-    hard_fail = amount_match is False or date_match is False
+    hard_fail = amount_match is False or date_match is False or (PAYMENT_TIME_APPROVAL_ENABLED and time_match is False)
     score = 0
     if amount_match: score += 60
     if date_match: score += 30
     if success_signal: score += 10
-    passed = (not hard_fail) and amount_match is True and date_match is True and score >= 90
+    if PAYMENT_TIME_APPROVAL_ENABLED and time_match:
+        score += 10
+    passed = (not hard_fail) and amount_match is True and date_match is True and success_signal is True and (not PAYMENT_TIME_APPROVAL_ENABLED or time_match is True)
     return passed, {
         "ocr_status": "matched" if passed else "manual_review",
         "amount_found": found, "amount_match": amount_match,
-        "transaction_at": tx_dt, "date_match": date_match, "time_match": None,
-        "success_signal": success_signal, "confidence": score,
+        "transaction_at": tx_dt, "date_match": date_match, "time_match": time_match,
+        "success_signal": success_signal, "confidence": min(score, 100),
         "date_note": date_note,
         "date_detected": tx_dt.date().isoformat() if tx_dt else None,
-        "time_detected": None,
+        "time_detected": tx_dt.strftime("%I:%M %p") if tx_dt else None,
     }
 
 
@@ -442,6 +457,7 @@ def _run_original_payment_ocr_sync(blob, sha256):
     image = None
     gray = None
     enlarged = None
+    deadline = time.monotonic() + PAYMENT_OCR_JOB_TIMEOUT_SECONDS
     try:
         image = ImageOps.exif_transpose(
             Image.open(io.BytesIO(blob)).convert("RGB")
@@ -481,15 +497,22 @@ def _run_original_payment_ocr_sync(blob, sha256):
 
         # EXACTLY the original 4 x 3 OCR passes.
         for name, build_variant in variant_builders:
+            if time.monotonic() >= deadline:
+                errors.append("OCR job deadline reached")
+                break
             variant = build_variant()
             try:
                 for psm in (6, 11, 12):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        errors.append("OCR job deadline reached")
+                        break
                     try:
                         value = pytesseract.image_to_string(
                             variant,
                             lang="eng",
                             config=f"--oem 3 --psm {psm}",
-                            timeout=20,
+                            timeout=max(1, min(PAYMENT_OCR_PASS_TIMEOUT, int(remaining))),
                         )
                         if value and value.strip():
                             successful_passes += 1
@@ -512,12 +535,14 @@ def _run_original_payment_ocr_sync(blob, sha256):
 
         # Preserve the original OCR-data recovery pass.
         try:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("OCR job deadline reached before recovery pass")
             data = pytesseract.image_to_data(
                 ImageOps.autocontrast(enlarged),
                 lang="eng",
                 config="--oem 3 --psm 11",
                 output_type=pytesseract.Output.DICT,
-                timeout=20,
+                timeout=PAYMENT_OCR_PASS_TIMEOUT,
             )
             words = [
                 x.strip() for x in data.get("text", [])
@@ -783,9 +808,14 @@ async def process_payment_submission(payment_client, message):
         elif check["amount_match"] is None:
             reason.append("The payment amount was not detected in the screenshot.")
         if check.get("date_match") is False:
-            reason.append("Transaction date does not match the payment date.")
+            reason.append("Transaction date does not match the screenshot submission date.")
         elif check.get("date_match") is None:
             reason.append("Transaction date could not be read confidently.")
+        if PAYMENT_TIME_APPROVAL_ENABLED:
+            if check.get("time_match") is False:
+                reason.append("Transaction time is outside the allowed approval window.")
+            elif check.get("time_match") is None:
+                reason.append("Transaction time could not be read confidently.")
         if check.get("success_signal") is False:
             reason.append("A payment-success confirmation was not detected.")
         if check.get("duplicate_suspected"):
@@ -802,7 +832,10 @@ async def process_payment_submission(payment_client, message):
         amount_found = check.get("amount_found")
         tx_at = check.get("transaction_at")
         amount_result = "Matched" if check.get("amount_match") is True else ("Not matched" if check.get("amount_match") is False else "Not confidently detected")
-        time_result = "Not used for approval"
+        if PAYMENT_TIME_APPROVAL_ENABLED:
+            time_result = "Matched" if check.get("time_match") is True else ("Not matched" if check.get("time_match") is False else "Not confidently detected")
+        else:
+            time_result = "Not used for approval (setting OFF)"
         success_result = "Detected" if check.get("success_signal") is True else ("Not detected" if check.get("success_signal") is False else "Not available")
         duplicate_result = "Suspected duplicate" if check.get("duplicate_suspected") else "No duplicate detected"
         ocr_result = str(ocr_status or "unknown").replace("_", " ").title()
@@ -828,7 +861,8 @@ async def process_payment_submission(payment_client, message):
             f"• Date detected: {escape(tx_at.strftime('%d %B %Y') if tx_at else 'NOT DETECTED')}\n"
             f"• Time detected: {escape(tx_at.strftime('%I:%M %p') if tx_at else 'NOT DETECTED')}\n"
             f"• Date/time comparison: {escape(time_result)}\n"
-            f"• Review gap setting: {PAYMENT_MAX_DELAY_MINUTES} min (transaction time is not used for approval)\n"
+            f"• Time approval: {'ON' if PAYMENT_TIME_APPROVAL_ENABLED else 'OFF'}\n"
+            f"• Allowed transaction delay: {PAYMENT_MAX_DELAY_MINUTES} min; future tolerance: {PAYMENT_FUTURE_TOLERANCE_MINUTES} min\n"
             f"• Payment-success signal: {escape(success_result)}\n"
             f"• Duplicate check: {escape(duplicate_result)}\n"
             f"• Verification confidence: {escape(confidence_text)}\n"
@@ -887,19 +921,45 @@ async def process_payment_submission(payment_client, message):
     except Exception as exc:
         LOGGER.warning("Could not copy payment screenshot to LOG_CHANNEL: %s", exc)
 
-    # Keep the successful path observable too: the owner can see exactly what
-    # the analyzer read before the strict comparison approved the payment.
+    # Auto-approved payments are presented to admins in the same review format
+    # as manual payments: report first, then the exact original screenshot. The
+    # only difference is that approval already happened, so only Reject remains.
     tx_at = check.get("transaction_at")
-    detected_report = (
-        "🟢 <b>Automatic payment verification passed</b>\n\n"
-        f"👤 User ID: <code>{user_id}</code>\n"
-        f"📦 Plan: {escape(str(order.get('plan_duration', 'N/A')))}\n"
-        f"💰 Expected: {escape(str(order.get('plan_price', 'N/A')))}\n"
-        f"💰 Amount detected: <b>{escape(str(check.get('amount_found')))}</b> → MATCH\n"
-        f"📅 Date detected: <b>{escape(tx_at.strftime('%d %B %Y') if tx_at else 'NOT DETECTED')}</b>\n"
+    sender_name = " ".join(part for part in [sender.first_name, sender.last_name] if part) or "Unknown"
+    sender_username = f"@{sender.username}" if sender.username else "none"
+    amount_found = check.get("amount_found")
+    amount_result = "Matched" if check.get("amount_match") is True else ("Not matched" if check.get("amount_match") is False else "Not confidently detected")
+    if PAYMENT_TIME_APPROVAL_ENABLED:
+        time_result = "Matched" if check.get("time_match") is True else ("Not matched" if check.get("time_match") is False else "Not confidently detected")
+    else:
+        time_result = "Not used for approval (setting OFF)"
+    success_result = "Detected" if check.get("success_signal") is True else ("Not detected" if check.get("success_signal") is False else "Not available")
+    confidence = check.get("confidence")
+    confidence_text = f"{confidence}%" if isinstance(confidence, (int, float)) else "N/A"
 
-        f"🔁 Duplicate: {'YES' if check.get('duplicate_suspected') else 'NO'}\n"
-        f"📝 OCR text read: <code>{escape((ocr_text[:900] if ocr_text else 'NO TEXT READ'))}</code>"
+    detected_report = (
+        "🟢 <b>Payment automatically approved</b>\n\n"
+        f"👤 User: {escape(sender_name)}\n"
+        f"🔗 Username: {escape(sender_username)}\n"
+        f"🆔 User ID: <code>{user_id}</code>\n"
+        f"📦 Plan: {escape(str(order.get('plan_duration', 'N/A')))}\n"
+        f"💰 Expected amount: {escape(str(order.get('plan_price', 'N/A')))}\n"
+        f"🆔 Screenshot message: <code>{message.id}</code>\n\n"
+        "<b>🔎 Automatic analysis report</b>\n"
+        f"• OCR engine: {escape(str(ocr_status or 'unknown').replace('_', ' ').title())}\n"
+        "• Analysis result: Automatically approved\n"
+        f"• Amount detected: {escape(str(amount_found) if amount_found is not None else 'NOT DETECTED')}\n"
+        f"• Amount comparison: {escape(amount_result)}\n"
+        f"• Date detected: {escape(tx_at.strftime('%d %B %Y') if tx_at else 'NOT DETECTED')}\n"
+        f"• Time detected: {escape(tx_at.strftime('%I:%M %p') if tx_at else 'NOT DETECTED')}\n"
+        f"• Date/time comparison: {escape(time_result)}\n"
+        f"• Time approval: {'ON' if PAYMENT_TIME_APPROVAL_ENABLED else 'OFF'}\n"
+        f"• Allowed transaction delay: {PAYMENT_MAX_DELAY_MINUTES} min; future tolerance: {PAYMENT_FUTURE_TOLERANCE_MINUTES} min\n"
+        f"• Payment-success signal: {escape(success_result)}\n"
+        "• Duplicate check: No duplicate detected\n"
+        f"• Verification confidence: {escape(confidence_text)}\n"
+        f"• OCR text read: <code>{escape((ocr_text[:900] if ocr_text else 'NO TEXT READ'))}</code>\n\n"
+        "The selected Premium plan has already been activated automatically. The screenshot is shown below. You can still reject this payment if the screenshot is wrong."
     )
     auto_reject_buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ REJECT PAYMENT", callback_data=f"payreject:{user_id}:{message.id}")]
@@ -912,7 +972,11 @@ async def process_payment_submission(payment_client, message):
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=auto_reject_buttons,
             )
-            await payment_client.copy_message(admin_id, message.chat.id, message.id)
+            await payment_client.copy_message(
+                admin_id,
+                message.chat.id,
+                message.id,
+            )
         except Exception as exc:
             LOGGER.warning("Could not send auto-approved payment review to %s: %s", admin_id, exc)
 
