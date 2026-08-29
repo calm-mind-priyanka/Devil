@@ -36,6 +36,22 @@ from info import (
 from database.users_chats_db import db
 
 LOGGER = logging.getLogger(__name__)
+
+# Screenshot OCR is intentionally kept identical to the original analysis
+# (all OCR variants and PSM passes remain). These limits only protect the bot
+# from CPU/RAM spikes when screenshots arrive close together.
+PAYMENT_OCR_MAX_CONCURRENT = max(
+    1, int(os.getenv("PAYMENT_OCR_MAX_CONCURRENT", "1"))
+)
+_PAYMENT_OCR_SEMAPHORE = asyncio.Semaphore(PAYMENT_OCR_MAX_CONCURRENT)
+
+# Tesseract can otherwise create several native worker threads per pass.
+# Limiting native parallelism prevents one screenshot from exhausting a small
+# Koyeb instance. It does not change the OCR variants or matching logic.
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OMP_DYNAMIC", "FALSE")
+
 IST = pytz.timezone("Asia/Kolkata")
 UTC = datetime.timezone.utc
 LIFETIME_EXPIRY = datetime.datetime(9999, 12, 31, 23, 59, 59)
@@ -330,55 +346,91 @@ def _payment_match_result(order, ocr_text, received_at):
 
 
 async def _ocr_payment_message(payment_client, message):
-    """Download and OCR a payment screenshot robustly.
+    """Run the original payment OCR safely without starving the bot.
 
-    Tesseract is a system executable (provided by Docker), while pytesseract
-    is only its Python wrapper.  We explicitly verify the executable, keep the
-    number of OCR passes reasonable, and return a useful status instead of
-    silently converting every failure into ``ocr_failed``.
+    IMPORTANT: The OCR analysis itself is intentionally unchanged:
+    - same 3600px image limit
+    - same grayscale/contrast/upscaled/threshold variants
+    - same PSM 6/11/12 passes for every variant
+    - same image_to_data pass
+    - same OCR output and perceptual hash generation
+
+    The only changes here are resource-safety measures:
+    - one screenshot OCR job at a time by default;
+    - CPU-heavy Pillow/Tesseract work runs in a worker thread;
+    - large temporary Pillow objects are released as soon as each phase ends.
     """
     if not PAYMENT_OCR_ENABLED:
         return "", "disabled", None, None
 
-    try:
-        raw = await payment_client.download_media(message, in_memory=True)
-        if raw is None:
-            return "", "download_failed", None, None
-        raw.seek(0)
-        blob = raw.read()
-        if not blob:
-            return "", "download_failed", None, None
-
-        sha256 = hashlib.sha256(blob).hexdigest()
-
-        # Make sure the actual OCR engine exists. pytesseract alone does not
-        # install tesseract-ocr.
-        tess_cmd = shutil.which("tesseract")
-        if not tess_cmd:
-            LOGGER.error("Tesseract executable was not found in PATH.")
-            return "", "tesseract_missing", sha256, None
-        pytesseract.pytesseract.tesseract_cmd = tess_cmd
-
+    async with _PAYMENT_OCR_SEMAPHORE:
         try:
-            version = subprocess.run(
-                [tess_cmd, "--version"], capture_output=True, text=True,
-                timeout=5, check=False
-            ).stdout.splitlines()[0]
-        except Exception:
-            version = "unknown"
-        LOGGER.info("Payment OCR using %s (%s)", tess_cmd, version)
+            raw = await payment_client.download_media(message, in_memory=True)
+            if raw is None:
+                return "", "download_failed", None, None
 
+            raw.seek(0)
+            blob = raw.read()
+            if not blob:
+                return "", "download_failed", None, None
+
+            sha256 = hashlib.sha256(blob).hexdigest()
+
+            # Keep the download outside the CPU worker, then do all CPU-heavy
+            # image/Tesseract work away from the main Pyrogram event loop.
+            try:
+                return await asyncio.to_thread(
+                    _run_original_payment_ocr_sync,
+                    blob,
+                    sha256,
+                )
+            except Exception as exc:
+                LOGGER.exception("Payment screenshot OCR worker failed: %s", exc)
+                return "", "ocr_failed", sha256, None
+
+        except Exception as exc:
+            LOGGER.exception("Payment screenshot OCR failed: %s", exc)
+            return "", "ocr_failed", None, None
+
+
+def _run_original_payment_ocr_sync(blob, sha256):
+    """Original OCR algorithm, executed outside the asyncio event loop."""
+    tess_cmd = shutil.which("tesseract")
+    if not tess_cmd:
+        LOGGER.error("Tesseract executable was not found in PATH.")
+        return "", "tesseract_missing", sha256, None
+
+    pytesseract.pytesseract.tesseract_cmd = tess_cmd
+
+    try:
+        version = subprocess.run(
+            [tess_cmd, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        ).stdout.splitlines()[0]
+    except Exception:
+        version = "unknown"
+    LOGGER.info("Payment OCR using %s (%s)", tess_cmd, version)
+
+    image = None
+    gray = None
+    enlarged = None
+    try:
         image = ImageOps.exif_transpose(
             Image.open(io.BytesIO(blob)).convert("RGB")
         )
         image.thumbnail((3600, 3600), Image.Resampling.LANCZOS)
 
-        # Payment screenshots are usually text-heavy.  A few targeted
-        # variants work better than dozens of expensive OCR passes.
         gray = ImageOps.grayscale(image)
-        variants = [
-            ("gray", gray),
-            ("contrast", ImageOps.autocontrast(gray)),
+
+        # Preserve the original four OCR variants and their exact order.
+        # Process them one at a time so temporary variants do not all remain
+        # resident in RAM simultaneously.
+        variant_builders = [
+            ("gray", lambda: gray),
+            ("contrast", lambda: ImageOps.autocontrast(gray)),
         ]
 
         enlarged = gray.resize(
@@ -387,37 +439,53 @@ async def _ocr_payment_message(payment_client, message):
         )
         enlarged = ImageEnhance.Contrast(enlarged).enhance(1.6)
         enlarged = enlarged.filter(ImageFilter.SHARPEN)
-        variants.append(("upscaled", enlarged))
-        variants.append((
-            "threshold",
-            ImageOps.autocontrast(enlarged).point(
-                lambda px: 255 if px >= 175 else 0
-            )
-        ))
+
+        variant_builders.extend([
+            ("upscaled", lambda: enlarged),
+            (
+                "threshold",
+                lambda: ImageOps.autocontrast(enlarged).point(
+                    lambda px: 255 if px >= 175 else 0
+                ),
+            ),
+        ])
 
         texts = []
         errors = []
         successful_passes = 0
 
-        # psm 6 handles normal payment screens; 11/12 handle sparse text.
-        for name, variant in variants:
-            for psm in (6, 11, 12):
-                try:
-                    value = pytesseract.image_to_string(
-                        variant,
-                        lang="eng",
-                        config=f"--oem 3 --psm {psm}",
-                        timeout=20,
-                    )
-                    if value and value.strip():
-                        successful_passes += 1
-                        texts.append(value.strip())
-                except Exception as exc:
-                    errors.append(f"{name}/psm{psm}: {exc}")
-                    LOGGER.warning("Payment OCR pass failed (%s/psm%s): %s", name, psm, exc)
+        # EXACTLY the original 4 x 3 OCR passes.
+        for name, build_variant in variant_builders:
+            variant = build_variant()
+            try:
+                for psm in (6, 11, 12):
+                    try:
+                        value = pytesseract.image_to_string(
+                            variant,
+                            lang="eng",
+                            config=f"--oem 3 --psm {psm}",
+                            timeout=20,
+                        )
+                        if value and value.strip():
+                            successful_passes += 1
+                            texts.append(value.strip())
+                    except Exception as exc:
+                        errors.append(f"{name}/psm{psm}: {exc}")
+                        LOGGER.warning(
+                            "Payment OCR pass failed (%s/psm%s): %s",
+                            name,
+                            psm,
+                            exc,
+                        )
+            finally:
+                # Do not close shared gray/enlarged objects here.
+                if name not in ("gray", "upscaled"):
+                    try:
+                        variant.close()
+                    except Exception:
+                        pass
 
-        # OCR data can recover short amount/date/time fields that get lost in
-        # normal line reconstruction.
+        # Preserve the original OCR-data recovery pass.
         try:
             data = pytesseract.image_to_data(
                 ImageOps.autocontrast(enlarged),
@@ -426,7 +494,10 @@ async def _ocr_payment_message(payment_client, message):
                 output_type=pytesseract.Output.DICT,
                 timeout=20,
             )
-            words = [x.strip() for x in data.get("text", []) if x and x.strip()]
+            words = [
+                x.strip() for x in data.get("text", [])
+                if x and x.strip()
+            ]
             if words:
                 texts.append(" ".join(words))
                 successful_passes += 1
@@ -436,29 +507,49 @@ async def _ocr_payment_message(payment_client, message):
 
         text = "\n".join(dict.fromkeys(texts))[:30000]
 
-        # Stable perceptual fingerprint for duplicate screenshot detection.
-        tiny = ImageOps.grayscale(image).resize((32, 32), Image.Resampling.LANCZOS)
+        # Preserve the original perceptual fingerprint algorithm.
+        tiny = ImageOps.grayscale(image).resize(
+            (32, 32), Image.Resampling.LANCZOS
+        )
         pixels = list(tiny.getdata())
         avg = sum(pixels) / len(pixels)
-        bits = ''.join('1' if px >= avg else '0' for px in pixels)
+        bits = "".join("1" if px >= avg else "0" for px in pixels)
         perceptual = hex(int(bits, 2))[2:].zfill(256)
+        try:
+            tiny.close()
+        except Exception:
+            pass
 
         if text:
             LOGGER.info(
                 "Payment OCR succeeded: %d passes, %d characters",
-                successful_passes, len(text)
+                successful_passes,
+                len(text),
             )
             return text, "ok", sha256, perceptual
 
         if errors:
-            LOGGER.error("Payment OCR produced no text. First error: %s", errors[0])
+            LOGGER.error(
+                "Payment OCR produced no text. First error: %s",
+                errors[0],
+            )
         else:
-            LOGGER.error("Payment OCR produced no text and no exception was reported.")
+            LOGGER.error(
+                "Payment OCR produced no text and no exception was reported."
+            )
         return "", "ocr_no_text", sha256, perceptual
 
     except Exception as exc:
         LOGGER.exception("Payment screenshot OCR failed: %s", exc)
-        return "", "ocr_failed", None, None
+        return "", "ocr_failed", sha256, None
+    finally:
+        # Explicitly release large Pillow buffers after the OCR job.
+        for obj in (gray, enlarged, image):
+            try:
+                if obj is not None:
+                    obj.close()
+            except Exception:
+                pass
 
 
 async def _activate_order(client, order, screenshot_message_id):
