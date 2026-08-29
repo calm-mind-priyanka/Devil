@@ -108,7 +108,7 @@ def _money_number(value):
     if value is None:
         return None
     text = str(value).strip().replace(",", "")
-    text = re.sub(r"(?i)(?:₹|rs\.?|inr)\s*", "", text)
+    text = re.sub(r"(?i)(?:₹|rs\.?|inr|\u00a5)\s*", "", text)
     m = re.search(r"(?<!\d)(\d+(?:[.]\d{1,2})?)(?!\d)", text)
     if not m:
         return None
@@ -133,7 +133,7 @@ def _extract_amount(text, expected):
     if not text:
         return None
     expected = _money_number(expected)
-    normalized = text.replace("\u00a0", " ").replace("₹", " Rs ")
+    normalized = text.replace("\u00a0", " ").replace("₹", " Rs ").replace("\u00a5", " Rs ")
     lines = [re.sub(r"\s+", " ", x.strip()) for x in normalized.splitlines() if x.strip()]
     candidates = []
 
@@ -405,8 +405,17 @@ async def _ocr_payment_message(payment_client, message, expected_amount=None):
                             is_expected = abs(float(compact) - expected_num) < 0.01
                         except ValueError:
                             pass
-                        if not is_expected and token == ("2" + whole):
-                            is_expected = True
+                        if not is_expected:
+                            # Common Android/payment-app OCR artifact: the rupee
+                            # glyph is read as a leading 2 (₹23 -> 223, ₹24 -> 224).
+                            digits = re.sub(r"\D", "", token)
+                            if digits in {"2" + whole, whole + "2"}:
+                                is_expected = True
+                            # OCR may read ₹23.00 as ¥23.00 / Y23.00; the
+                            # currency glyph is irrelevant once the numeric
+                            # value is isolated.
+                            if re.fullmatch(r"[Yy¥]?" + re.escape(whole) + r"(?:[.,:]?0{1,2})?", str(token)):
+                                is_expected = True
                         if is_expected:
                             amount_hints.append((height, -top, whole + ".00"))
                 except Exception:
