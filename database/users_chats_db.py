@@ -513,7 +513,7 @@ class Database:
                 continue
             try:
                 distance = sum(a != b for a, b in zip(bin(int(perceptual_hash, 16))[2:].zfill(1024), bin(int(other, 16))[2:].zfill(1024)))
-                if distance <= 8:
+                if distance <= 2:
                     return row
             except Exception:
                 continue
