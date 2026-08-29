@@ -1,7 +1,7 @@
 FROM python:3.10-slim
 
-# Install system packages required by the bot and OCR
-RUN apt-get update && apt-get install -y \
+# System packages required by the bot + image/OCR processing
+RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ffmpeg \
     tesseract-ocr \
@@ -12,19 +12,24 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
+# App directory
 WORKDIR /app
 
-# Copy the complete project
-COPY . /app
+# Copy requirements first for better Docker caching
+COPY requirements.txt /app/requirements.txt
 
 # Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    if [ -f requirements.txt ]; then \
-        pip install --no-cache-dir -r requirements.txt; \
-    fi
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r /app/requirements.txt
 
-# Make startup script executable if present
-RUN if [ -f start.sh ]; then chmod +x start.sh; fi
+# Copy the complete bot
+COPY . /app
 
-# Start the bot
-CMD ["bash", "start.sh"]
+# Make start script executable
+RUN chmod +x /app/start.sh
+
+# IMPORTANT: verify that the real OCR engine exists
+RUN tesseract --version
+
+# Start bot
+CMD ["bash", "/app/start.sh"]
