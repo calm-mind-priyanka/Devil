@@ -213,23 +213,34 @@ def _extract_amount(text, expected):
 
 
 def _parse_transaction_datetime(text, reference, expected_amount=None):
-    """Extract transaction date/time from many common payment-app formats."""
+    """Extract the actual payment transaction date/time from payment screenshots.
+
+    OCR output contains several passes of the same screenshot, so unrelated clock
+    values can appear alongside the real transaction time.  Prefer an explicit
+    AM/PM time that repeats across OCR passes and/or sits near payment words.
+    This prevents a stray value such as ``1:10 PM`` from beating the real
+    ``6:40 PM`` transaction time simply because it is closer to a date string.
+    """
     if not text:
         return None, False
-    cleaned = re.sub(r"\s+", " ", text.replace("\u00a0", " ")).strip()
+
+    normalized = text.replace("\u00a0", " ")
+    cleaned = re.sub(r"\s+", " ", normalized).strip()
     ref_ist = _aware_ist(reference) or reference
 
     date_candidates = []
-    # dd/mm/yyyy, dd-mm-yyyy, dd.mm.yyyy and two-digit years.
     for pat in (
         r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b",
         r"\b(\d{1,2})[.](\d{1,2})[.](\d{2,4})\b",
     ):
         for m in re.finditer(pat, cleaned):
             d, mo, y = map(int, m.groups())
-            if y < 100: y += 2000
-            try: date_candidates.append((datetime.date(y, mo, d), m.start()))
-            except ValueError: pass
+            if y < 100:
+                y += 2000
+            try:
+                date_candidates.append((datetime.date(y, mo, d), m.start()))
+            except ValueError:
+                pass
 
     month_names = "January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec"
     month_pat = re.compile(
@@ -241,48 +252,82 @@ def _parse_transaction_datetime(text, reference, expected_amount=None):
         else:
             mon, d, year = m.group(4), int(m.group(5)), m.group(6)
         y = int(year) if year else ref_ist.year
-        if y < 100: y += 2000
+        if y < 100:
+            y += 2000
         try:
             mo = datetime.datetime.strptime(mon[:3].title(), "%b").month
             date_candidates.append((datetime.date(y, mo, d), m.start()))
-        except ValueError: pass
+        except ValueError:
+            pass
 
     for word, delta in (("today", 0), ("yesterday", 1)):
         m = re.search(rf"\b{word}\b", cleaned, re.I)
         if m:
             date_candidates.append((ref_ist.date() - datetime.timedelta(days=delta), m.start()))
 
-    time_candidates = []
-    # 2:07 PM, 2.07 PM, 14:07, 02:07pm; tolerate OCR spaces.
-    time_pat = re.compile(r"(?<!\d)(\d{1,2})\s*[:.]\s*(\d{2})(?:\s*[:.]\s*(\d{2}))?\s*(AM|PM|A\.M\.|P\.M\.)?(?!\d)", re.I)
+    # Match lowercase/uppercase AM/PM (pm, PM, Pm, pM) case-insensitively.
+    # Explicit AM/PM is required here so plain unrelated values such as 1:10
+    # are not mistaken for the transaction time.
+    time_pat = re.compile(
+        r"(?<!\d)(\d{1,2})\s*[:.]\s*(\d{2})(?:\s*[:.]\s*(\d{2}))?\s*(AM|PM|A\.M\.|P\.M\.)(?!\w)",
+        re.I,
+    )
     expected = _money_number(expected_amount)
+
+    # Count normalized time values across all OCR passes. Real screenshot text
+    # is usually read repeatedly, while OCR hallucinations are often one-offs.
+    frequency = {}
+    parsed_candidates = []
     for m in time_pat.finditer(cleaned):
-        hour, minute = int(m.group(1)), int(m.group(2))
+        raw_hour, minute = int(m.group(1)), int(m.group(2))
         second = int(m.group(3) or 0)
         ap = (m.group(4) or "").upper().replace(".", "")
+        hour = raw_hour
         if ap:
-            if hour > 12: continue
-            if hour == 12: hour = 0
-            if ap == "PM": hour += 12
-        if hour > 23 or minute > 59 or second > 59: continue
-        # OCR frequently turns ₹23.00 into 23:00. Don't select that as the time
-        # when it equals the expected amount and there is another plausible time.
-        likely_amount = expected is not None and abs(hour - expected) < 0.01 and not ap and m.group(3) is None
-        time_candidates.append((datetime.time(hour, minute, second), m.start(), bool(ap), likely_amount))
+            if hour > 12:
+                continue
+            if hour == 12:
+                hour = 0
+            if ap == "PM":
+                hour += 12
+        if hour > 23 or minute > 59 or second > 59:
+            continue
+        likely_amount = (
+            expected is not None
+            and abs(raw_hour - expected) < 0.01
+            and not ap
+            and m.group(3) is None
+        )
+        key = (hour, minute, second, ap or "24H")
+        frequency[key] = frequency.get(key, 0) + 1
+        parsed_candidates.append((datetime.time(hour, minute, second), m.start(), bool(ap), likely_amount, key))
 
-    if not date_candidates or not time_candidates:
+    if not date_candidates or not parsed_candidates:
         return None, bool(date_candidates)
 
+    payment_words = re.compile(
+        r"payment|paid|successful|success|completed|complete|sent|received|credited|debited|transaction|transfer|upi|amount|total",
+        re.I,
+    )
+
     best = None
-    for t, tpos, explicit_ap, likely_amount in time_candidates:
+    for t, tpos, explicit_ap, likely_amount, key in parsed_candidates:
         date, dpos = min(date_candidates, key=lambda x: abs(x[1] - tpos))
-        score = (1000 if explicit_ap else 700) - min(abs(dpos - tpos), 1000) * 0.5
-        if likely_amount: score -= 600
+        nearby = cleaned[max(0, tpos - 120): min(len(cleaned), tpos + 120)]
+        context_hits = len(payment_words.findall(nearby))
+        score = 0
+        score += 1000 if explicit_ap else 600
+        score += min(frequency[key] - 1, 6) * 180
+        score += min(context_hits, 4) * 90
+        score -= min(abs(dpos - tpos), 1000) * 0.15
+        if likely_amount:
+            score -= 900
         candidate = (score, date, t)
-        if best is None or candidate[0] > best[0]: best = candidate
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+
     _, date, time = best
     return datetime.datetime.combine(date, time), True
-
 
 def _payment_success_signal(text):
     lower = (text or "").lower()
