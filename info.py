@@ -32,10 +32,16 @@ PAYMENT_ADMIN_IDS = [
     if admin.lstrip("-").isdigit()
 ]
 PAYMENT_OCR_ENABLED = is_enabled(environ.get("PAYMENT_OCR_ENABLED", "True"), True)
+# When enabled, the screenshot transaction timestamp must be within the allowed window.
+# Disabled by default for compatibility; OCR time is still displayed in admin reports.
+PAYMENT_TIME_APPROVAL_ENABLED = is_enabled(environ.get("PAYMENT_TIME_APPROVAL_ENABLED", "False"), False)
 # OCR uses the screenshot transaction time only as a plausibility check. It is
 # deliberately not treated as proof of a genuine payment.
 PAYMENT_MAX_DELAY_MINUTES = int(environ.get("PAYMENT_MAX_DELAY_MINUTES", "10"))
 PAYMENT_FUTURE_TOLERANCE_MINUTES = int(environ.get("PAYMENT_FUTURE_TOLERANCE_MINUTES", "15"))
+# Keep OCR bounded on small hosts so a difficult screenshot cannot monopolize the bot.
+PAYMENT_OCR_PASS_TIMEOUT = max(3, int(environ.get("PAYMENT_OCR_PASS_TIMEOUT", "8")))
+PAYMENT_OCR_JOB_TIMEOUT_SECONDS = max(15, int(environ.get("PAYMENT_OCR_JOB_TIMEOUT_SECONDS", "45")))
 # Keep the existing Premium plans/prices. Prices are strings so currency formatting
 # is preserved exactly as configured.
 PREMIUM_PLANS = {
