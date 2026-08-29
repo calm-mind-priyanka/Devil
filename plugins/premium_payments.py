@@ -828,7 +828,7 @@ async def process_payment_submission(payment_client, message):
             f"• Date detected: {escape(tx_at.strftime('%d %B %Y') if tx_at else 'NOT DETECTED')}\n"
             f"• Time detected: {escape(tx_at.strftime('%I:%M %p') if tx_at else 'NOT DETECTED')}\n"
             f"• Date/time comparison: {escape(time_result)}\n"
-            f"• Allowed window: {_fmt_dt(lower)} → {_fmt_dt(upper)} ({PAYMENT_MAX_DELAY_MINUTES} min)\n"
+            f"• Review gap setting: {PAYMENT_MAX_DELAY_MINUTES} min (transaction time is not used for approval)\n"
             f"• Payment-success signal: {escape(success_result)}\n"
             f"• Duplicate check: {escape(duplicate_result)}\n"
             f"• Verification confidence: {escape(confidence_text)}\n"
