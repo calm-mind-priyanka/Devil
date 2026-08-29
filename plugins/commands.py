@@ -351,7 +351,10 @@ async def start(client: Client, message):
     user_id = m.from_user.id
     premium_active = await db.has_premium_access(user_id)
 
-    settings = await get_settings(int(grp_id))
+    # Premium is the first access decision. Do not require group settings,
+    # force-subscription, or verification before checking the real Premium
+    # record used by /add_premium.
+    settings = await get_settings(int(grp_id)) if int(grp_id) else {}
     if not premium_active:
         # Preserve the legacy fsub_id field while allowing the settings UI to manage
         # multiple force-subscribe channels independently for each group.
