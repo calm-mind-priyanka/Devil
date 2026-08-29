@@ -346,70 +346,73 @@ async def start(client: Client, message):
     # sent as normal files with the group's original caption/buttons.
     file_mode_completed = pre in ("filemode", "allfilesmode")
 
-    settings = await get_settings(int(data.split("_", 2)[1]))
-    # Preserve the legacy fsub_id field while allowing the settings UI to manage
-    # multiple force-subscribe channels independently for each group.
-    fsub_channels = settings.get("fsub_channels") or [settings.get("fsub_id", AUTH_CHANNEL)]
-    try:
-        fsub_channels = [int(c) for c in fsub_channels]
-    except (TypeError, ValueError):
-        fsub_channels = [int(AUTH_CHANNEL)]
+    # Premium users must bypass the access gates and reach the original file
+    # delivery path. This uses the same DB record as /add_premium.
+    user_id = m.from_user.id
+    premium_active = await db.has_premium_access(user_id)
 
-    if AUTH_REQ_CHANNEL and int(AUTH_REQ_CHANNEL) in fsub_channels:
-        if not await is_req_subscribed(client, message):
-            try:
-                invite_link = await client.create_chat_invite_link(
-                    int(AUTH_REQ_CHANNEL), creates_join_request=True
-                )
-            except ChatAdminRequired:
-                logger.error("Make sure Bot is admin in Forcesub channel")
-                return
-            btn = [[InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link.invite_link)]]
-            if message.command[1] != "subscribe":
-                btn.append([[InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}")]][0])
-            await client.send_photo(
-                chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=script.FORCESUB_TEXT,
-                reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML,
-            )
-            return
-    else:
-        btn = []
-        missing_custom = False
-        for channel in fsub_channels:
-            if channel == int(AUTH_CHANNEL):
-                continue
-            try:
-                subscribed = await is_subscribed(client, message.from_user.id, channel)
-            except Exception:
-                subscribed = False
-            if not subscribed:
-                missing_custom = True
+    settings = await get_settings(int(grp_id))
+    if not premium_active:
+        # Preserve the legacy fsub_id field while allowing the settings UI to manage
+        # multiple force-subscribe channels independently for each group.
+        fsub_channels = settings.get("fsub_channels") or [settings.get("fsub_id", AUTH_CHANNEL)]
+        try:
+            fsub_channels = [int(c) for c in fsub_channels]
+        except (TypeError, ValueError):
+            fsub_channels = [int(AUTH_CHANNEL)]
+
+        if AUTH_REQ_CHANNEL and int(AUTH_REQ_CHANNEL) in fsub_channels:
+            if not await is_req_subscribed(client, message):
                 try:
-                    invite = await client.create_chat_invite_link(channel)
-                    btn.append([InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite.invite_link)])
+                    invite_link = await client.create_chat_invite_link(
+                        int(AUTH_REQ_CHANNEL), creates_join_request=True
+                    )
+                except ChatAdminRequired:
+                    logger.error("Make sure Bot is admin in Forcesub channel")
+                    return
+                btn = [[InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link.invite_link)]]
+                if message.command[1] != "subscribe":
+                    btn.append([[InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}")]][0])
+                await client.send_photo(
+                    chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=script.FORCESUB_TEXT,
+                    reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML,
+                )
+                return
+        else:
+            btn = []
+            missing_custom = False
+            for channel in fsub_channels:
+                if channel == int(AUTH_CHANNEL):
+                    continue
+                try:
+                    subscribed = await is_subscribed(client, message.from_user.id, channel)
+                except Exception:
+                    subscribed = False
+                if not subscribed:
+                    missing_custom = True
+                    try:
+                        invite = await client.create_chat_invite_link(channel)
+                        btn.append([InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite.invite_link)])
+                    except Exception:
+                        pass
+
+            default_missing = not await is_req_subscribed(client, message)
+            if default_missing:
+                try:
+                    invite_link_default = await client.create_chat_invite_link(int(AUTH_CHANNEL), creates_join_request=True)
+                    btn.append([InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link_default.invite_link)])
                 except Exception:
                     pass
 
-        default_missing = not await is_req_subscribed(client, message)
-        if default_missing:
-            try:
-                invite_link_default = await client.create_chat_invite_link(int(AUTH_CHANNEL), creates_join_request=True)
-                btn.append([InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link_default.invite_link)])
-            except Exception:
-                pass
+            if message.command[1] != "subscribe" and (missing_custom or default_missing):
+                btn.append([InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}")])
+            if btn:
+                await client.send_photo(
+                    chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=script.FORCESUB_TEXT,
+                    reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML,
+                )
+                return
 
-        if message.command[1] != "subscribe" and (missing_custom or default_missing):
-            btn.append([InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}")])
-        if btn:
-            await client.send_photo(
-                chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=script.FORCESUB_TEXT,
-                reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML,
-            )
-            return
-
-    user_id = m.from_user.id
-    # Premium is the single access decision for the existing /start file flow.
-    premium_active = await db.has_premium_access(user_id)
     if not premium_active:
         grp_id = int(grp_id)
         print(f"Group Id - {grp_id}")
@@ -529,9 +532,9 @@ async def start(client: Client, message):
         delete_delay = None
         auto_delete_enabled = False
         for file in files:
-            user_id = message.from_user.id
-            grp_id = temp.CHAT.get(user_id)
-            settings = await get_settings(grp_id)
+            # grp_id is encoded in allfiles_<grp_id>_<key>; do not depend on
+            # temp.CHAT for direct/Premium starts.
+            settings = await get_settings(int(grp_id))
             auto_delete_enabled = bool(settings.get("auto_delete", False))
             try:
                 delete_delay = max(1, int(settings.get("delete_time", FILE_AUTO_DEL_TIMER)))
