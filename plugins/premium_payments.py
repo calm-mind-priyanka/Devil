@@ -331,12 +331,36 @@ def _parse_transaction_datetime(text, reference, expected_amount=None):
     return datetime.datetime.combine(best_date, best_time), True
 
 def _payment_success_signal(text):
-    lower = (text or "").lower()
-    negative = ["failed", "declined", "reversed", "cancelled", "canceled", "pending"]
+    """Detect a clear payment-success status from OCR text.
+
+    Supports common wording used by GPay, PhonePe, Paytm, BHIM, UPI and bank
+    payment apps. A clear failure/pending status always overrides positives.
+    """
+    lower = re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+    # These indicate that the payment is not successfully completed.
+    negative = [
+        "payment failed", "transaction failed", "transfer failed", "failed",
+        "declined", "reversed", "cancelled", "canceled",
+        "pending", "processing", "in progress",
+    ]
     if any(word in lower for word in negative):
         return False
-    positive = ["payment successful", "paid successfully", "transaction successful", "payment complete", "success", "paid", "sent"]
-    return any(word in lower for word in positive)
+
+    # Common explicit success statuses across payment apps.
+    positive = [
+        "payment successful", "payment success",
+        "payment completed", "payment complete",
+        "transaction successful", "transaction success",
+        "transaction completed", "transaction complete",
+        "transfer successful", "transfer success",
+        "transfer completed", "transfer complete",
+        "paid successfully", "paid successfully",
+        "payment done", "transaction done",
+        "completed successfully", "successfully completed",
+        "completed", "successful", "success",
+    ]
+    return any(phrase in lower for phrase in positive)
 
 
 def _payment_match_result(order, ocr_text, received_at):
