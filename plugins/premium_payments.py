@@ -27,6 +27,7 @@ from info import (
     PAYMENT_BOT_TOKEN,
     PAYMENT_BOT_USERNAME,
     PAYMENT_ADMIN_IDS,
+    OWNER_USERNAME,
     PREMIUM_PLANS,
     PAYMENT_OCR_ENABLED,
     PAYMENT_MAX_DELAY_MINUTES,
@@ -94,12 +95,12 @@ def _admins():
 
 
 def _contact_admin_markup():
-    """Return a direct contact button for the first configured payment admin."""
-    admin_ids = sorted(_admins())
-    if not admin_ids:
+    """Return a direct Telegram contact button using the configured owner username."""
+    username = (OWNER_USERNAME or "").strip().lstrip("@")
+    if not username:
         return None
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("💬 CONTACT ADMIN", url=f"tg://user?id={admin_ids[0]}")]]
+        [[InlineKeyboardButton("💬 CONTACT ADMIN", url=f"https://t.me/{username}")]]
     )
 
 
