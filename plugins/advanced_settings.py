@@ -45,8 +45,6 @@ def _small(text):
 
 def _cancel_link():
     """Return /cancel as a native Telegram bot-command link."""
-    # Keep this as plain /cancel text. Telegram automatically makes a
-    # registered bot command clickable and tapping it sends /cancel.
     return "/cancel"
 
 
@@ -83,38 +81,34 @@ async def _group_title(client, group_id):
 # ============================================================
 
 def _main_settings_buttons(settings, grp_id):
-
-    def onoff(key):
-        return "ON ✅" if settings.get(key) else "OFF ❌"
-
     return [
         [
             InlineKeyboardButton(
-                f"📝 ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ",
+                "📝 ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ",
                 callback_data=f"set_page#auto_filter#{grp_id}"
             ),
             InlineKeyboardButton(
-                f"🔒 ꜰɪʟᴇ sᴇᴄᴜʀᴇ",
+                "🔒 ꜰɪʟᴇ sᴇᴄᴜʀᴇ",
                 callback_data=f"set_page#file_secure#{grp_id}"
             )
         ],
         [
             InlineKeyboardButton(
-                f"🈵 ɪᴍᴅʙ",
+                "🈵 ɪᴍᴅʙ",
                 callback_data=f"set_page#imdb#{grp_id}"
             ),
             InlineKeyboardButton(
-                f"🔍 sᴘᴇʟʟ ᴄʜᴇᴄᴋ",
+                "🔍 sᴘᴇʟʟ ᴄʜᴇᴄᴋ",
                 callback_data=f"set_page#spell_check#{grp_id}"
             )
         ],
         [
             InlineKeyboardButton(
-                f"🗑️ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ",
+                "🗑️ ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ",
                 callback_data=f"set_page#auto_delete#{grp_id}"
             ),
             InlineKeyboardButton(
-                f"📚 ʀᴇsᴜʟᴛ ᴍᴏᴅᴇ",
+                "📚 ʀᴇsᴜʟᴛ ᴍᴏᴅᴇ",
                 callback_data=f"set_page#link#{grp_id}"
             )
         ],
@@ -585,7 +579,10 @@ def _parse_duration(value):
 @Client.on_callback_query(filters.regex(r"^(set_|advanced_settings)"))
 async def settings_callback(client, query):
     data = query.data
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     try:
         if data.startswith("set_group#"):
@@ -707,7 +704,6 @@ async def settings_callback(client, query):
             )
 
         if action == "set_cancel":
-            # Compatibility for old/stale keyboards only. New prompts use clickable /cancel text.
             PENDING.pop((query.from_user.id, gid), None)
             return await _edit_prompt(
                 client,
@@ -800,14 +796,11 @@ async def advanced_cancel(client, message):
     PENDING.pop((uid, gid), None)
     page = state.get("origin_page", "main")
 
-    # Delete the user's /cancel command immediately.
     try:
         await message.delete()
     except Exception:
         pass
 
-    # Replace the active prompt with the cancelled state and a Back button
-    # that returns to the exact settings page where the input was started.
     try:
         await client.edit_message_text(
             state["prompt_chat_id"],
@@ -858,8 +851,6 @@ async def advanced_input(client, message):
                 client, state,
                 _cancel_prompt("<b>❌ ɪɴᴠᴀʟɪᴅ ꜱʜᴏʀᴛʟɪɴᴋ ᴅᴏᴍᴀɪɴ.</b>\n\nꜱᴇɴᴅ ᴏɴʟʏ ᴛʜᴇ ᴅᴏᴍᴀɪɴ, ᴇxᴀᴍᴘʟᴇ: <code>tnshort.net</code>")
             )
-        # The domain was accepted. Remove the user's input so the settings
-        # conversation stays clean; the prompt message remains for the API step.
         try:
             await message.delete()
         except Exception:
@@ -877,7 +868,12 @@ async def advanced_input(client, message):
         number = state["number"]
         domain = state["domain"]
         try:
-            response = requests.get(f"https://{domain}/api?api={value}&url=https://t.me/", timeout=10)
+            # OPTIMIZED: Run network call asynchronously using an executor to prevent event loop freezes
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.get(f"https://{domain}/api?api={value}&url=https://t.me/", timeout=10)
+            )
             payload = response.json()
             if payload.get("status") not in {"success", True}:
                 raise RuntimeError(payload.get("message") or "ɪɴᴠᴀʟɪᴅ ꜱʜᴏʀᴛᴇɴᴇʀ ᴏʀ ᴀᴘɪ")
