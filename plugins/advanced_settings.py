@@ -19,8 +19,27 @@ from database.users_chats_db import db
 # PER-USER PENDING INPUT
 # ============================================================
 
-PENDING = {}
-AUTH_CACHE = {}  # Keys are (user_id, group_id)
+PENDING = {}  # Keys are (user_id, group_id)
+
+# Fast in-process caches for settings navigation. Changes invalidate the cache.
+_AUTH_CACHE = {}
+_SETTINGS_CACHE = {}
+_AUTH_TTL = 15.0
+_SETTINGS_TTL = 1.5
+
+def _invalidate_settings_cache(gid):
+    _SETTINGS_CACHE.pop(int(gid), None)
+
+async def _fast_settings(gid):
+    gid = int(gid)
+    now = asyncio.get_running_loop().time()
+    item = _SETTINGS_CACHE.get(gid)
+    if item and now - item[0] < _SETTINGS_TTL:
+        return item[1]
+    value = await get_settings(gid)
+    _SETTINGS_CACHE[gid] = (now, value)
+    return value
+
 
 
 # ============================================================
@@ -121,7 +140,7 @@ def _main_settings_buttons(settings, grp_id):
         ],
         [
             InlineKeyboardButton(
-                f"📁 ꜰɪʟᴇ ᴍᴏᴅᴇ · {'ꜰɪʟᴇ 📁' if settings.get('file_mode') else 'ᴠᴇʀɪғʏ ♻️'}",
+                f"🗂 ꜰɪʟᴇ ᴍᴏᴅᴇ · {'ꜰɪʟᴇ 🗂 ' if settings.get('file_mode') else 'ᴠᴇʀɪғʏ ♻️'}",
                 callback_data=f"set_page#file_mode#{grp_id}"
             ),
             InlineKeyboardButton(
@@ -151,7 +170,7 @@ def _main_settings_buttons(settings, grp_id):
         ],
         [
             InlineKeyboardButton(
-                "📢 ꜰᴏʀᴄᴇ ᴄʜᴀɴɴᴇʟ",
+                "👥 ꜰᴏʀᴄᴇ ᴄʜᴀɴɴᴇʟ",
                 callback_data=f"set_page#fsub#{grp_id}"
             ),
             InlineKeyboardButton(
@@ -223,7 +242,7 @@ async def show_group_settings(client, target, grp_id):
             return await target.answer("ᴏɴʟʏ ɢʀᴏᴜᴘ ᴏᴡɴᴇʀ/ᴀᴅᴍɪɴ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ᴛʜɪs", show_alert=True)
         return await target.reply_text("<b>ʏᴏᴜ ᴀʀᴇ ɴᴏᴛ ᴀɴ ᴀᴅᴍɪɴ ɪɴ ᴛʜɪs ɢʀᴏᴜᴘ.</b>")
 
-    settings = await get_settings(int(grp_id))
+    settings = await _fast_settings(int(grp_id))
     title = await _group_title(client, grp_id)
 
     text = (
@@ -505,9 +524,8 @@ def _page_buttons(key, settings, grp_id):
     b.append(_back(grp_id, "main"))
     return b
 
-async def show_page(client, query, key, grp_id, extra=None, settings=None):
-    if settings is None:
-        settings = await get_settings(int(grp_id))
+async def show_page(client, query, key, grp_id, extra=None):
+    settings = await _fast_settings(int(grp_id))
 
     if key == "shortener":
         settings = dict(settings)
@@ -534,24 +552,18 @@ async def show_page(client, query, key, grp_id, extra=None, settings=None):
 # ============================================================
 
 async def _authorize(client, query, grp_id):
-    # Avoid repeating the same admin lookup on every settings button click.
-    # The short TTL keeps the menu responsive while still periodically revalidating.
-    import time
     cache_key = (query.from_user.id, int(grp_id))
-    cached = AUTH_CACHE.get(cache_key)
-    now = time.monotonic()
-    if cached and now - cached[0] < 30:
-        ok = cached[1]
-    else:
-        try:
-            ok = await is_check_admin(client, int(grp_id), query.from_user.id)
-        except Exception:
-            ok = False
-        AUTH_CACHE[cache_key] = (now, ok)
-
+    now = asyncio.get_running_loop().time()
+    if now - _AUTH_CACHE.get(cache_key, 0) < _AUTH_TTL:
+        return True
+    try:
+        ok = await is_check_admin(client, int(grp_id), query.from_user.id)
+    except Exception:
+        ok = False
     if not ok:
         await query.answer("ᴏɴʟʏ ɢʀᴏᴜᴘ ᴏᴡɴᴇʀ/ᴀᴅᴍɪɴ ᴄᴀɴ ᴍᴀɴᴀɢᴇ ᴛʜɪs", show_alert=True)
         return False
+    _AUTH_CACHE[cache_key] = now
     return True
 
 
@@ -657,34 +669,36 @@ async def settings_callback(client, query):
 
         if action == "set_reset":
             await save_default_settings(gid)
+            _invalidate_settings_cache(gid)
             return await show_group_settings(client, query, gid)
 
         if action == "set_file_mode":
             mode = key if key in {"verify", "shortlink"} else "verify"
-            settings = dict(await get_settings(gid))
-            settings["file_mode"] = True
-            settings["file_mode_type"] = mode
             await save_group_settings(gid, "file_mode", True)
+            _invalidate_settings_cache(gid)
             await save_group_settings(gid, "file_mode_type", mode)
-            return await show_page(client, query, "file_mode", gid, settings=settings)
+            _invalidate_settings_cache(gid)
+            return await show_page(client, query, "file_mode", gid)
 
         if action == "set_toggle":
-            settings = dict(await get_settings(gid))
+            settings = await _fast_settings(gid)
             value = not bool(settings.get(key))
-            settings[key] = value
             await save_group_settings(gid, key, value)
+            _invalidate_settings_cache(gid)
             if len(parts) > 3 and parts[3] == "shortlink":
-                return await show_page(client, query, "shortlink", gid, settings=settings)
-            return await show_page(client, query, key, gid, settings=settings)
+                return await show_page(client, query, "shortlink", gid)
+            return await show_page(client, query, key, gid)
 
         if action == "set_default":
             defaults = db.default.copy()
             await save_group_settings(gid, key, int(MAX_BTN) if key == "max_results" else defaults.get(key, ""))
+            _invalidate_settings_cache(gid)
             return await show_page(client, query, key, gid)
 
         if action == "set_delete":
             if key == "request_channel":
                 await save_group_settings(gid, key, int(REQUEST_CHANNEL))
+                _invalidate_settings_cache(gid)
             return await show_page(client, query, key, gid)
 
         if action == "set_input":
@@ -751,7 +765,9 @@ async def settings_callback(client, query):
             domain_key = {1: "shortner", 2: "shortner_two", 3: "shortner_three"}[number]
             api_key = {1: "api", 2: "api_two", 3: "api_three"}[number]
             await save_group_settings(gid, domain_key, "")
+            _invalidate_settings_cache(gid)
             await save_group_settings(gid, api_key, "")
+            _invalidate_settings_cache(gid)
             return await show_page(client, query, "shortener", gid, number)
 
         if action == "set_delete_shortner":
@@ -760,7 +776,9 @@ async def settings_callback(client, query):
             if key == "all":
                 for domain_key, api_key in (("shortner", "api"), ("shortner_two", "api_two"), ("shortner_three", "api_three")):
                     await save_group_settings(gid, domain_key, "")
+                    _invalidate_settings_cache(gid)
                     await save_group_settings(gid, api_key, "")
+                    _invalidate_settings_cache(gid)
                 return await query.message.edit_text(
                     "<b>ᴅᴇʟᴇᴛᴇ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ ✅</b>",
                     reply_markup=InlineKeyboardMarkup([_back(gid, "shortlink_list")]),
@@ -770,7 +788,7 @@ async def settings_callback(client, query):
             number = int(key)
             domain_key = {1: "shortner", 2: "shortner_two", 3: "shortner_three"}[number]
             api_key = {1: "api", 2: "api_two", 3: "api_three"}[number]
-            settings = await get_settings(gid)
+            settings = await _fast_settings(gid)
 
             if not settings.get(domain_key) or not settings.get(api_key):
                 return await query.message.edit_text(
@@ -780,7 +798,9 @@ async def settings_callback(client, query):
                 )
 
             await save_group_settings(gid, domain_key, "")
+            _invalidate_settings_cache(gid)
             await save_group_settings(gid, api_key, "")
+            _invalidate_settings_cache(gid)
             return await query.message.edit_text(
                 f"<b>ᴅᴇʟᴇᴛᴇ {number} ꜱʜᴏʀᴛʟɪɴᴋ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ ✅</b>",
                 reply_markup=InlineKeyboardMarkup([_back(gid, "delete_menu")]),
@@ -907,7 +927,9 @@ async def advanced_input(client, message):
         domain_key = {1: "shortner", 2: "shortner_two", 3: "shortner_three"}[number]
         api_key = {1: "api", 2: "api_two", 3: "api_three"}[number]
         await save_group_settings(gid, domain_key, domain)
+        _invalidate_settings_cache(gid)
         await save_group_settings(gid, api_key, value)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
         ordinal = "1ꜱᴛ" if number == 1 else "2ɴᴅ" if number == 2 else "3ʀᴅ"
@@ -927,6 +949,7 @@ async def advanced_input(client, message):
             )
         setting_key = "verify_time" if number == 1 else "third_verify_time"
         await save_group_settings(gid, setting_key, seconds)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
         return await _edit_prompt(
@@ -942,6 +965,7 @@ async def advanced_input(client, message):
         except Exception:
             return await message.reply_text("Send a valid positive number of seconds or /cancel")
         await save_group_settings(gid, "delete_time", value_int)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
@@ -952,6 +976,7 @@ async def advanced_input(client, message):
         except Exception:
             return await message.reply_text("Max results must be between 1 and 20.")
         await save_group_settings(gid, "max_results", value_int)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
@@ -959,6 +984,7 @@ async def advanced_input(client, message):
         if any(x not in value for x in ("{search}", "{mention}", "{group}")):
             return await message.reply_text("Template must support {search}, {mention}, and {group}, or use /cancel.")
         await save_group_settings(gid, "template", value)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
@@ -966,6 +992,7 @@ async def advanced_input(client, message):
         if "{file_name}" not in value:
             return await message.reply_text("Caption must contain {file_name}, or use /cancel.")
         await save_group_settings(gid, "caption", value)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
@@ -973,11 +1000,13 @@ async def advanced_input(client, message):
         if not (value.startswith("http://") or value.startswith("https://")):
             return await message.reply_text("Send a valid http/https URL or /cancel")
         await save_group_settings(gid, key, value)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
     elif key in {"shortner", "shortner_two", "shortner_three", "api", "api_two", "api_three", "verify_time", "third_verify_time"}:
         await save_group_settings(gid, key, value)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
@@ -987,6 +1016,7 @@ async def advanced_input(client, message):
         except ValueError:
             return await message.reply_text("Send a valid channel ID or /cancel")
         await save_group_settings(gid, key, value_int)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
@@ -1000,6 +1030,7 @@ async def advanced_input(client, message):
         if value_int not in channels:
             channels.append(value_int)
         await save_group_settings(gid, "fsub_channels", channels)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
@@ -1013,11 +1044,13 @@ async def advanced_input(client, message):
         if not channels:
             channels = [AUTH_CHANNEL]
         await save_group_settings(gid, "fsub_channels", channels)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
     else:
         await save_group_settings(gid, key, value)
+        _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
