@@ -68,8 +68,17 @@ async def Jisshu_start():
     b_users, b_chats = await db.get_banned()
     temp.BANNED_USERS = b_users
     temp.BANNED_CHATS = b_chats
-    await Media.ensure_indexes()
-    await db.ensure_premium_indexes()
+    # Movie index creation is fail-open inside Media.ensure_indexes().
+    # Premium/user index creation must also never prevent the bot from starting
+    # when the user database has reached its storage quota.
+    try:
+        await Media.ensure_indexes()
+    except Exception:
+        logging.exception("Movie index setup failed; continuing in read/failover mode.")
+    try:
+        await db.ensure_premium_indexes()
+    except Exception:
+        logging.exception("User/premium index setup failed; continuing without new indexes.")
     me = await JisshuBot.get_me()
     temp.ME = me.id
     temp.U_NAME = me.username
