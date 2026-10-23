@@ -69,6 +69,9 @@ def _debug_handler(func):
             result = await func(client, event, *args, **kwargs)
             logger.info("HANDLER_OK module=%s handler=%s user=%s", __name__, func.__name__, user)
             return result
+        except StopPropagation:
+            logger.info("HANDLER_STOP_PROPAGATION module=%s handler=%s user=%s", __name__, func.__name__, user)
+            raise
         except Exception as exc:
             logger.exception("HANDLER_FAILED module=%s handler=%s kind=%s user=%s chat=%s payload=%r error_type=%s error=%s", __name__, func.__name__, "callback" if is_callback else "message", user, chat, payload, type(exc).__name__, exc)
             if is_callback:
@@ -353,12 +356,14 @@ async def global_language_callback(client: Client, query):
                 core_tr(value, "start", mention=query.from_user.mention, status=get_status()),
                 reply_markup=markup, parse_mode=enums.ParseMode.HTML,
             )
+        else:
+            logger.warning("GLOBAL_LANG selection saved but callback has no message to refresh: user=%s language=%s", query.from_user.id, value)
     except Exception as exc:
         from pyrogram.errors import MessageNotModified
-        if not isinstance(exc, MessageNotModified):
+        if isinstance(exc, MessageNotModified):
+            logger.info("GLOBAL_LANG home UI already up to date: user=%s language=%s", query.from_user.id, value)
+        else:
             logger.exception("GLOBAL_LANG failed refreshing home UI: user=%s language=%s", query.from_user.id, value)
-    else:
-        logger.warning("GLOBAL_LANG selection saved but query.message is missing: user=%s", query.from_user.id)
 
 
 async def _edit_language_message(query, text, markup):

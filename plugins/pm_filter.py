@@ -937,6 +937,11 @@ async def quality_search(client: Client, query: CallbackQuery):
     temp.FILES_ID[key] = files
     reqnxt = query.from_user.id if query.from_user else 0
     settings = await get_settings(await _group_id_for_query(query))
+    del_msg = (
+        f"\n\n<blockquote>⚠️ <b>THIS MESSAGE WILL BE AUTO DELETE AFTER {_delete_time_text(int(settings.get('delete_time', DELETE_TIME)))} TO AVOID COPYRIGHT ISSUES 🗑</b></blockquote>"
+        if settings.get("auto_delete", AUTO_DELETE)
+        else ""
+    )
     temp.CHAT[query.from_user.id] = query.message.chat.id
     ads, ads_name, _ = await mdb.get_advirtisment()
     ads_text = ""
@@ -1130,6 +1135,11 @@ async def lang_search(client: Client, query: CallbackQuery):
     temp.FILES_ID[key] = files
     reqnxt = query.from_user.id if query.from_user else 0
     settings = await get_settings(await _group_id_for_query(query))
+    del_msg = (
+        f"\n\n<blockquote>⚠️ <b>THIS MESSAGE WILL BE AUTO DELETE AFTER {_delete_time_text(int(settings.get('delete_time', DELETE_TIME)))} TO AVOID COPYRIGHT ISSUES 🗑</b></blockquote>"
+        if settings.get("auto_delete", AUTO_DELETE)
+        else ""
+    )
     group_id = query.message.chat.id
     temp.CHAT[query.from_user.id] = query.message.chat.id
     ads, ads_name, _ = await mdb.get_advirtisment()
