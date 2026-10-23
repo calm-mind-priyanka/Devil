@@ -287,35 +287,50 @@ async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
     # Fetch enough rows from each store to construct the requested combined
     # page. Duplicate file_ids are removed so failover does not double results.
     fetch_count = None if lang else max(1, offset + max_results)
+    models = (PrimaryMedia, FallbackMedia)
+    # Run both failover stores concurrently. The old sequential implementation
+    # made every search wait for the slower MongoDB connection twice (read then
+    # count), which was especially noticeable compared with IMDX.
+    read_results = await asyncio.gather(
+        *(_search_model(model, filter, fetch_count) for model in models),
+        return_exceptions=True,
+    )
     rows = []
     seen = set()
-    for model in (PrimaryMedia, FallbackMedia):
-        try:
-            model_rows = await _search_model(model, filter, fetch_count)
-            for file in model_rows:
-                key = getattr(file, "file_id", None) or getattr(file, "_id", None)
-                if key in seen:
-                    continue
-                if lang and lang not in file.file_name.lower():
-                    continue
-                seen.add(key)
-                rows.append(file)
-        except Exception as exc:
-            logger.warning("Movie search failed on %s store: %s", model.__name__, exc)
+    successful_reads = 0
+    for model, model_rows in zip(models, read_results):
+        if isinstance(model_rows, Exception):
+            logger.warning("Movie search failed on %s store: %s", model.__name__, model_rows)
+            continue
+        successful_reads += 1
+        for file in model_rows:
+            key = getattr(file, "file_id", None) or getattr(file, "_id", None)
+            if key in seen:
+                continue
+            if lang and lang not in file.file_name.lower():
+                continue
+            seen.add(key)
+            rows.append(file)
 
-    # Keep primary-store results first, then failover-store results.
+    if successful_reads == 0:
+        raise RuntimeError("All configured movie databases failed to read")
     if lang:
         total_results = len(rows)
     else:
+        count_results = await asyncio.gather(
+            *(model.count_documents(filter) for model in models),
+            return_exceptions=True,
+        )
         total_results = 0
-        for model in (PrimaryMedia, FallbackMedia):
-            try:
-                total_results += await model.count_documents(filter)
-            except Exception as exc:
-                logger.warning("Movie count failed on %s store: %s", model.__name__, exc)
-        # The same file can temporarily exist in both stores during failover.
-        # The displayed result list is de-duplicated, while the count remains
-        # a safe upper bound in that uncommon case.
+        for model, count in zip(models, count_results):
+            if isinstance(count, Exception):
+                logger.warning("Movie count failed on %s store: %s", model.__name__, count)
+            else:
+                total_results += count
+        # When a count query fails, keep the result window usable rather than
+        # reporting zero for a successfully read store.
+        if total_results == 0 and rows:
+            total_results = len(rows)
     files = rows[offset : offset + max_results]
     next_offset = offset + max_results
     if next_offset >= total_results:
