@@ -36,12 +36,21 @@ from database.ia_filterdb import (
     Media,
     get_search_results,
     get_bad_files,
+    get_title_candidates,
 )
 import random
 
 lock = asyncio.Lock()
 import traceback
 from rapidfuzz import process, fuzz
+
+try:
+    from imdbkit import IMDBKit
+    imdb_spelling = IMDBKit()
+except Exception as _imdbkit_import_error:
+    imdb_spelling = None
+    import logging as _logging
+    _logging.getLogger(__name__).warning("IMDbKit spelling checker unavailable: %s", _imdbkit_import_error)
 
 BUTTONS = {}
 FILES_ID = {}
@@ -1554,25 +1563,29 @@ async def cb_handler(client: Client, query: CallbackQuery):
     elif query.data == "free":
         # Keep the existing plan/pricing page, but add explicit plan-selection
         # buttons so a payment order can be tied to a Telegram user ID.
-        plan_buttons = [
-            [
-                InlineKeyboardButton("💳 𝟶𝟷 ᴡᴇᴇᴋ ₹23", callback_data="buyplan_week"),
-                InlineKeyboardButton("💳 𝟶𝟷 ᴍᴏɴᴛʜ ₹59", callback_data="buyplan_month"),
-            ],
-            [
-                InlineKeyboardButton("💳 𝟶𝟹 ᴍᴏɴᴛʜ ₹𝟷𝟺𝟿", callback_data="buyplan_3month"),
-                InlineKeyboardButton("💳 𝟶𝟼 ᴍᴏɴᴛʜ ₹𝟸𝟼𝟿", callback_data="buyplan_6month"),
-            ],
-            [
-                InlineKeyboardButton("💳 𝟷𝟸 ᴍᴏɴᴛʜ ₹𝟺𝟿𝟿", callback_data="buyplan_year"),
-                InlineKeyboardButton("💎 ʟɪꜰᴇᴛɪᴍᴇ ₹𝟿𝟿𝟿", callback_data="buyplan_lifetime"),
-            ],
+        # Build the public plan buttons from the same live mapping used by
+        # premium_payments.py. The previous hard-coded labels meant an admin
+        # could save a new price while the public plan menu kept showing the
+        # old amount, making the setting appear not to work.
+        available_plans = list(PREMIUM_PLANS.items())
+        plan_buttons = []
+        for index in range(0, len(available_plans), 2):
+            row = []
+            for plan_key, plan in available_plans[index:index + 2]:
+                label = f"💳 {plan['name']} {plan['price']}"
+                row.append(
+                    InlineKeyboardButton(
+                        label[:60], callback_data=f"buyplan_{plan_key}"
+                    )
+                )
+            plan_buttons.append(row)
+        plan_buttons.extend([
             [InlineKeyboardButton("💎 ᴄᴜꜱᴛᴏᴍ ᴘʟᴀɴ 💎", callback_data="other")],
             [
                 InlineKeyboardButton("• ʙᴀᴄᴋ •", callback_data="seeplans"),
                 InlineKeyboardButton("• ᴄʟᴏꜱᴇ •", callback_data="close_data"),
             ],
-        ]
+        ])
         buttons = plan_buttons
         reply_markup = InlineKeyboardMarkup(buttons)
         await client.edit_message_media(
@@ -2170,44 +2183,122 @@ async def cb_handler(client: Client, query: CallbackQuery):
         return
 
 
-async def ai_spell_check(wrong_name):
-    """Suggest a likely IMDb title without blocking Telegram's event loop."""
-    try:
-        search_results = await asyncio.to_thread(imdb.search_movie, wrong_name)
-    except Exception:
-        logger = __import__("logging").getLogger(__name__)
-        logger.exception("IMDb spelling lookup failed for query %r", wrong_name)
+def _spell_norm(value):
+    """Normalize punctuation/season tokens before title matching, like IMDX."""
+    value = str(value or "").strip()
+    value = re.sub(r"(?i)\bseason\s*0?(\d{1,2})\b", lambda m: f"S{int(m.group(1)):02d}", value)
+    value = re.sub(r"[\[\]{}()]+", " ", value)
+    value = value.replace("_", " ").replace(".", " ").replace("-", " ")
+    value = re.sub(r"[/:;,!?]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+async def ai_spell_check(chat_id, wrong_name):
+    """IMDX-style IMDbKit correction, adapted to Devil's bounded DB search.
+
+    IMDbKit is the primary spelling source. A candidate is accepted only when
+    Devil's own movie database confirms that it has a matching file. If IMDbKit
+    is unavailable or has no usable title, use a bounded local filename fallback.
+    """
+    wrong_name = _spell_norm(wrong_name)
+    if len(wrong_name) < 3:
         return None
 
+    logger = __import__("logging").getLogger(__name__)
     movie_list = []
-    for item in search_results or []:
-        title = item.get("title") if isinstance(item, dict) else getattr(item, "title", None)
-        if title and title not in movie_list:
-            movie_list.append(str(title))
-    if not movie_list:
+    if imdb_spelling is not None:
+        try:
+            # IMDbKit performs network I/O synchronously; move it off the bot's
+            # event loop so a slow IMDb response does not stall other searches.
+            search_results = await asyncio.wait_for(
+                asyncio.to_thread(imdb_spelling.search_movie, wrong_name),
+                timeout=8.0,
+            )
+            if search_results and hasattr(search_results, "titles"):
+                movie_list = [
+                    str(movie.title).strip()
+                    for movie in search_results.titles
+                    if getattr(movie, "title", None)
+                ]
+            logger.info(
+                "SPELLCHECK_IMDB_RESULTS chat=%s query=%r candidates=%d",
+                chat_id, wrong_name, len(movie_list),
+            )
+        except Exception:
+            logger.exception("SPELLCHECK_IMDB_FAILED chat=%s query=%r", chat_id, wrong_name)
+
+    # This mirrors IMDX's top-match loop: rank IMDb titles with RapidFuzz,
+    # require a strong match, and try at most five candidates against Devil's DB.
+    for _ in range(min(5, len(movie_list))):
+        match = process.extractOne(
+            wrong_name, movie_list, scorer=fuzz.WRatio, score_cutoff=81
+        )
+        if not match:
+            break
+        movie, score, _index = match
+        logger.info(
+            "SPELLCHECK_CANDIDATE chat=%s query=%r title=%r score=%.1f source=imdb",
+            chat_id, wrong_name, movie, score,
+        )
+        try:
+            files, _, _ = await get_search_results(movie, max_results=1)
+        except Exception:
+            logger.exception(
+                "SPELLCHECK_DB_CHECK_FAILED chat=%s query=%r candidate=%r",
+                chat_id, wrong_name, movie,
+            )
+            files = []
+        if files:
+            logger.info(
+                "SPELLCHECK_ACCEPTED chat=%s query=%r title=%r source=imdb",
+                chat_id, wrong_name, movie,
+            )
+            return movie
+        movie_list = [title for title in movie_list if title != movie]
+
+    # Local fallback is bounded to a small candidate window; this does not scan
+    # or count the entire collection. It helps when IMDbKit has no title result.
+    try:
+        local_names = await get_title_candidates(wrong_name, limit=180)
+    except Exception:
+        logger.exception("SPELLCHECK_LOCAL_CANDIDATES_FAILED chat=%s query=%r", chat_id, wrong_name)
         return None
 
-    # RapidFuzz is implemented in optimized native code and returns a 0..100
-    # score; only try strong matches, avoiding expensive blind retries.
-    for _ in range(min(5, len(movie_list))):
-        closest_match = process.extractOne(wrong_name, movie_list, scorer=fuzz.WRatio, score_cutoff=81)
-        if not closest_match:
-            return None
-        movie = closest_match[0]
-        try:
-            files, _, _ = await get_search_results(movie)
-        except Exception:
-            return None
-        if files:
-            return movie
-        movie_list.remove(movie)
+    if local_names:
+        local_match = process.extractOne(
+            wrong_name, local_names, scorer=fuzz.WRatio, score_cutoff=86
+        )
+        if local_match:
+            candidate, score, _index = local_match
+            logger.info(
+                "SPELLCHECK_CANDIDATE chat=%s query=%r title=%r score=%.1f source=local",
+                chat_id, wrong_name, candidate, score,
+            )
+            # Candidate may be a full filename. Searching it is safe because it
+            # was retrieved from the database, and the bounded search confirms it.
+            try:
+                files, _, _ = await get_search_results(candidate, max_results=1)
+            except Exception:
+                logger.exception(
+                    "SPELLCHECK_LOCAL_DB_CHECK_FAILED chat=%s query=%r candidate=%r",
+                    chat_id, wrong_name, candidate,
+                )
+                files = []
+            if files:
+                logger.info(
+                    "SPELLCHECK_ACCEPTED chat=%s query=%r title=%r source=local",
+                    chat_id, wrong_name, candidate,
+                )
+                return candidate
+
+    logger.info("SPELLCHECK_NO_MATCH chat=%s query=%r", chat_id, wrong_name)
     return None
 
 
 async def auto_filter(client, msg, spoll=False, pm_mode=False):
     if not spoll:
         message = msg
-        search = message.text
+        search = _spell_norm(message.text)
         chat_id = message.chat.id
         settings = await get_settings(chat_id)
         try:
@@ -2220,7 +2311,7 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
         if not files:
             if settings["spell_check"]:
                 ai_sts = await msg.reply_text("ᴄʜᴇᴄᴋɪɴɢ ʏᴏᴜʀ sᴘᴇʟʟɪɴɢ...")
-                is_misspelled = await ai_spell_check(search)
+                is_misspelled = await ai_spell_check(chat_id=chat_id, wrong_name=search)
                 if is_misspelled:
                     #      await ai_sts.edit(f'<b><i>ʏᴏᴜʀ ꜱᴘᴇʟʟɪɴɢ ɪꜱ ᴡʀᴏɴɢ ɴᴏᴡ ᴅᴇᴠɪʟ ꜱᴇᴀʀᴄʜɪɴɢ ᴡɪᴛʜ ᴄᴏʀʀᴇᴄᴛ ꜱᴘᴇʟʟɪɴɢ - <code>{is_misspelled}</code></i></b>')
                     await asyncio.sleep(2)
