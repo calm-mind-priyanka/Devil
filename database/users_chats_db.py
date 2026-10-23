@@ -1,3 +1,4 @@
+import logging
 import datetime
 import pytz
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -13,6 +14,7 @@ mydb = client[DATABASE_NAME]
 
 class Database:
     def __init__(self):
+        # Preserve Devil's original single general-data MongoDB connection.
         self.col = mydb.users
         self.grp = mydb.groups
         self.misc = mydb.misc
@@ -56,7 +58,21 @@ class Database:
         "max_results": MAX_BTN,
         "delete_time": DELETE_TIME,
         "request_channel": REQUEST_CHANNEL,
-        "fsub_channels": [AUTH_CHANNEL],
+        "fsub_channels": [],
+        "fsub_enabled": False,
+        "fsub_button_labels": {},
+        "new_shortener_enabled": False,
+        "new_shortener_step1_url": "",
+        "new_shortener_step2_url": "",
+        "new_shortener_step3_url": "",
+        "new_shortener_api1": "",
+        "new_shortener_api2": "",
+        "new_shortener_api3": "",
+        "new_shortener_tutorial1": "",
+        "new_shortener_tutorial2": "",
+        "new_shortener_tutorial3": "",
+        "new_shortener_gap1": THREE_VERIFY_GAP,
+        "new_shortener_gap2": THREE_VERIFY_GAP,
     }
 
     def new_user(self, id, name):
@@ -65,11 +81,58 @@ class Database:
         )
 
     async def get_settings(self, group_id):
-        chat = await self.grp.find_one({"id": int(group_id)})
-        if chat and "settings" in chat:
-            return chat["settings"]
-        else:
-            return self.default.copy()
+        group_id = int(group_id)
+        chat = await self.grp.find_one({"id": group_id})
+        settings = self.default.copy()
+        settings.update((chat or {}).get("settings") or {})
+        return settings
+
+    async def get_owner_shortener_pairs(self):
+        """Return only shortener slots registered to the current BOT OWNER_ID."""
+        doc = await self.misc.find_one({"_id": "owner_shorteners"})
+        if doc:
+            try:
+                if int(doc.get("owner_id")) != int(OWNER_ID):
+                    return [("", ""), ("", ""), ("", "")]
+            except (TypeError, ValueError):
+                return [("", ""), ("", ""), ("", "")]
+            if isinstance(doc.get("pairs"), list):
+                pairs = []
+                for item in doc["pairs"][:3]:
+                    if isinstance(item, dict):
+                        pairs.append((str(item.get("domain", "")).strip(), str(item.get("api", "")).strip()))
+                    else:
+                        pairs.append(("", ""))
+                while len(pairs) < 3:
+                    pairs.append(("", ""))
+                return pairs
+        # Initial environment shorteners belong to the bot owner.
+        return [
+            (str(SHORTENER_WEBSITE).strip(), str(SHORTENER_API).strip()),
+            (str(SHORTENER_WEBSITE2).strip(), str(SHORTENER_API2).strip()),
+            (str(SHORTENER_WEBSITE3).strip(), str(SHORTENER_API3).strip()),
+        ]
+
+    async def set_owner_shortener(self, slot, domain, api):
+        """Persist one owner shortener slot (1, 2 or 3)."""
+        slot = int(slot)
+        if slot not in (1, 2, 3):
+            raise ValueError("owner shortener slot must be 1, 2 or 3")
+        pairs = await self.get_owner_shortener_pairs()
+        while len(pairs) < 3:
+            pairs.append(("", ""))
+        pairs[slot - 1] = (str(domain or "").strip(), str(api or "").strip())
+        await self.misc.update_one(
+            {"_id": "owner_shorteners"},
+            {"$set": {
+                "pairs": [
+                    {"domain": d, "api": a} for d, a in pairs
+                ],
+                "owner_id": int(OWNER_ID),
+            }},
+            upsert=True,
+        )
+        return pairs
 
     async def find_join_req(self, id):
         return bool(await self.req.find_one({"id": id}))
@@ -140,7 +203,16 @@ class Database:
         return False if not chat else chat.get("chat_status")
 
     async def update_settings(self, id, settings):
-        await self.grp.update_one({"id": int(id)}, {"$set": {"settings": settings}})
+        """Persist settings and fail loudly if MongoDB did not acknowledge the write."""
+        result = await self.grp.update_one(
+            {"id": int(id)},
+            {"$set": {"settings": settings}, "$setOnInsert": {"id": int(id), "title": str(id),
+             "chat_status": {"is_disabled": False, "reason": ""}}},
+            upsert=True,
+        )
+        if not getattr(result, "acknowledged", False):
+            raise RuntimeError("General-data MongoDB did not acknowledge group settings write")
+        return True
 
     async def total_chat_count(self):
         count = await self.grp.count_documents({})
@@ -176,30 +248,27 @@ class Database:
         return await self.misc.update_one(myquery, newvalues)
 
     async def is_user_verified(self, user_id):
+        """Return whether the Step-1/master verification is still inside its 24h window.
+
+        This is intentionally a rolling 24-hour window from the successful
+        Step-1 verification time. It is NOT reset at midnight. Step 2 and Step 3
+        keep their existing independent gap logic below.
+        """
         user = await self.get_notcopy_user(user_id)
         try:
-            pastDate = user["last_verified"]
+            past_date = user["last_verified"]
         except Exception:
             user = await self.get_notcopy_user(user_id)
-            pastDate = user["last_verified"]
+            past_date = user["last_verified"]
+
         ist_timezone = pytz.timezone("Asia/Kolkata")
-        pastDate = pastDate.astimezone(ist_timezone)
+        past_date = past_date.astimezone(ist_timezone)
         current_time = datetime.datetime.now(tz=ist_timezone)
-        seconds_since_midnight = (
-            current_time
-            - datetime.datetime(
-                current_time.year,
-                current_time.month,
-                current_time.day,
-                0,
-                0,
-                0,
-                tzinfo=ist_timezone,
-            )
-        ).total_seconds()
-        time_diff = current_time - pastDate
-        total_seconds = time_diff.total_seconds()
-        return total_seconds <= seconds_since_midnight
+        time_diff = current_time - past_date
+
+        # Step 1 is the master recycle window: exactly 24 hours from the
+        # successful Step-1 callback. Do not use calendar-day/midnight logic.
+        return datetime.timedelta(0) <= time_diff <= datetime.timedelta(hours=24)
 
     async def user_verified(self, user_id):
         user = await self.get_notcopy_user(user_id)
@@ -285,12 +354,46 @@ class Database:
                 return second_time < pastDate
         return False
 
-    async def create_verify_id(self, user_id: int, hash):
-        res = {"user_id": user_id, "hash": hash, "verified": False}
+    async def create_verify_id(self, user_id: int, hash, **metadata):
+        # A new verification attempt supersedes older unfinished attempts for the
+        # same user/group. This prevents stale reminders from older file requests.
+        group_id = int(metadata.get("group_id") or 0)
+        await self.verify_id.update_many(
+            {
+                "user_id": int(user_id),
+                "group_id": group_id,
+                "verified": False,
+                "superseded_at": {"$exists": False},
+            },
+            {"$set": {"superseded_at": datetime.datetime.now(pytz.timezone("Asia/Kolkata"))}},
+        )
+        res = {
+            "user_id": int(user_id),
+            "hash": hash,
+            "verified": False,
+            "shortlink_clicked": False,
+            "return_accepted": False,
+            **metadata,
+        }
         return await self.verify_id.insert_one(res)
+
+    async def get_latest_verification_for_delivery(self, user_id: int, group_id: int, delivery_key: str):
+        """Return the newest verification record for this user/file delivery."""
+        return await self.verify_id.find_one(
+            {
+                "user_id": int(user_id),
+                "group_id": int(group_id),
+                "delivery_key": str(delivery_key),
+            },
+            sort=[("created_at", -1)],
+        )
 
     async def get_verify_id_info(self, user_id: int, hash):
         return await self.verify_id.find_one({"user_id": user_id, "hash": hash})
+
+    async def get_verify_id_by_return_token(self, return_token: str):
+        """Resolve a short verification-return token to its server-side state."""
+        return await self.verify_id.find_one({"return_token": str(return_token)})
 
     async def update_verify_id_info(self, user_id, hash, value: dict):
         myquery = {"user_id": user_id, "hash": hash}
@@ -411,6 +514,21 @@ class Database:
     # ------------------------------------------------------------------
     # Premium payment / subscription helpers
     # ------------------------------------------------------------------
+    async def ensure_verification_indexes(self):
+        """Create safe non-unique indexes used by verification tracking."""
+        indexes = [
+            [("return_token", 1)],
+            [("hash", 1)],
+            [("user_id", 1), ("group_id", 1), ("created_at", -1)],
+            [("verified", 1), ("shortlink_created_at", 1), ("shortlink_clicked_at", 1)],
+        ]
+        for keys in indexes:
+            try:
+                await self.verify_id.create_index(keys)
+            except Exception:
+                # Index creation must never prevent the bot from starting.
+                logging.exception("Could not create verification index: %s", keys)
+
     async def ensure_premium_indexes(self):
         await self.premium_orders.create_index("user_id", unique=True)
         await self.premium_orders.create_index([
@@ -422,6 +540,7 @@ class Database:
         )
         await self.payment_submissions.create_index("user_id")
         await self.payment_submissions.create_index("file_sha256")
+
 
     async def create_or_update_premium_order(self, user_id, username, plan,
                                              plan_duration, plan_price):
@@ -457,15 +576,25 @@ class Database:
         return await self.premium_orders.find_one({"user_id": int(user_id)})
 
     async def get_pending_premium_order(self, user_id):
-        return await self.premium_orders.find_one({
-            "user_id": int(user_id),
-            "payment_status": "waiting_for_payment",
-        })
+        order = await self.premium_orders.find_one({"user_id": int(user_id)})
+        return order if order and order.get("payment_status") == "waiting_for_payment" else None
 
     async def record_payment_submission(self, data):
-        """Always retain a screenshot submission, including unmatched ones."""
-        return await self.payment_submissions.insert_one(data)
-
+        """Record a Telegram screenshot message once in Devil's original database."""
+        query = {
+            "payment_chat_id": int(data["payment_chat_id"]),
+            "payment_bot_message_id": int(data["payment_bot_message_id"]),
+        }
+        if await self.payment_submissions.find_one(query):
+            return False
+        try:
+            await self.payment_submissions.insert_one(data)
+            return True
+        except Exception as exc:
+            # Duplicate-key is an idempotency result; avoid importing another DB layer.
+            if "duplicate key" in str(exc).lower() or getattr(exc, "code", None) == 11000:
+                return False
+            raise
 
     async def update_payment_submission(self, user_id, message_id, data):
         return await self.payment_submissions.update_one(

@@ -1,5 +1,5 @@
 from motor.motor_asyncio import AsyncIOMotorClient
-from info import DATABASE_URI
+from info import DATABASE_URI, PREMIUM_PLANS
 from datetime import datetime
 
 
@@ -101,6 +101,30 @@ class Database:
                     await self.config_col.update_one(
                         {}, {"$set": {"advertisement": None}}
                     )
+
+    async def get_premium_plans(self):
+        configuration = await self.config_col.find_one({})
+        plans = configuration.get("premium_plans") if configuration else None
+        return plans if isinstance(plans, dict) and plans else None
+
+    async def save_premium_plans(self, plans):
+        await self.config_col.update_one(
+            {}, {"$set": {"premium_plans": plans}}, upsert=True
+        )
+
+    async def load_premium_plans(self):
+        """Load persisted Premium plan values into the shared runtime mapping."""
+        plans = await self.get_premium_plans()
+        if not plans:
+            await self.save_premium_plans(PREMIUM_PLANS)
+            return PREMIUM_PLANS
+        # Keep only known plan keys and required fields, while preserving the
+        # code defaults for anything missing in an older database document.
+        for key, default in PREMIUM_PLANS.items():
+            value = plans.get(key)
+            if isinstance(value, dict):
+                default.update({k: value[k] for k in ("name", "duration", "days", "price") if k in value})
+        return PREMIUM_PLANS
 
     async def update_configuration(self, key, value):
         try:

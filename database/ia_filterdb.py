@@ -23,6 +23,19 @@ from info import (
 
 logger = logging.getLogger(__name__)
 
+
+async def notify_movie_storage_failure(bot, reason="movie index write failed"):
+    """Notify the configured log channel when Devil cannot index an incoming file."""
+    try:
+        from info import LOG_VR_CHANNEL
+        if LOG_VR_CHANNEL:
+            await bot.send_message(
+                LOG_VR_CHANNEL,
+                f"⚠️ <b>Movie index write failed</b>\n\n<code>{str(reason)[:700]}</code>",
+            )
+    except Exception:
+        logger.exception("Could not send movie storage failure notification")
+
 # Movie/file records normally live in FILES_DATABASE.  DATABASE_URI is the
 # application's user/premium/config database, but it is also used as a
 # failover movie store when the dedicated files cluster is full/unavailable.
