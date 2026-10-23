@@ -1,23 +1,25 @@
-# Devil modification report
+# Devil / IMDX integration review — follow-up fix
 
-Base: `Devil-main.zip` supplied by the user. IMDX was used as the feature reference.
+Base: original Devil project. IMDX is the reference.
 
-## Features brought over from IMDX
-- Three-step shortener workflow with per-group settings, tutorial links, API/domain inputs, and IST calendar-day state.
-- Expanded advanced settings UI, including group-specific force-subscription configuration and the new shortener settings.
-- New shortener return-token validation and link/click tracking helpers.
-- Updated start/language UI, global language selection, and localized three-step verification prompts.
-- Premium-plan configuration persistence and IMDX's additional premium/payment workflow improvements.
-- Additional owner/admin utilities and indexing failure notification support.
+## Follow-up issues identified in the previously supplied ZIP
 
-## Explicitly preserved from Devil
-- Devil's original general-data MongoDB connection and collection layout (`DATABASE_URI`, `DATABASE_NAME`). No IMDX general-data secondary/failover wrapper is included.
-- Devil's existing movie-index storage/fallback implementation in `database/ia_filterdb.py` (`FILES_DATABASE` with its existing `DATABASE_URI` fallback). IMDX's `DATABASE_URI2` / `MULTIPLE_DB` architecture is not included.
-- Devil's existing MongoDB, Telegram bot, payment bot, and shortener API configuration variables and defaults in `info.py`.
-- Devil's original poster/metadata implementation (`utils.py`, `plugins/pm_filter.py`, and `plugins/channel.py`). IMDX poster changes were not copied.
-- Devil's original Jisshu template colour configuration. IMDX's automatic inline-button colour injection (`button_styles.py` and `sitecustomize.py`) was not copied.
-- Existing premium-expiry reminders are retained. The new IMDX verification-recovery/reminder messages and related customer-care callbacks were excluded.
+- `plugins/pm_filter.py` had not been merged from IMDX; the previous archive retained Devil's older PM-search path. This meant the global-language onboarding behaviour from IMDX was missing in PM searches.
+- The `/start` handler attempted a Telegram message reaction before processing any payload. If Telegram rejected that reaction, the handler could stop before handling a normal start, file deep-link, or shortener return.
 
-## Validation
-- Static compilation and unit tests are run on the packaged source where dependencies available in this environment permit.
-- Live Telegram, MongoDB, payment-bot, and shortener-provider integration checks require the user's deployment credentials and staging environment; they are not claimed as completed here.
+## Changes in this follow-up archive
+
+- Added the global language-selection gate to ordinary private-message searches, using the existing `language.py` and Devil database facade. Commands and `/start` deep-links remain handled by their dedicated handlers.
+- Made the `/start` reaction best-effort, so reaction failures cannot block the start/verification/file-delivery flow.
+- Kept Devil's original database and MongoDB configuration. No second-database/failover architecture was added.
+- Kept Devil's original poster implementation and colour configuration; no automatic verification-reminder messages were added.
+
+## Checks
+
+- `python -m compileall -q .`: passed.
+- `python -m unittest discover -s tests -v`: 5 tests passed.
+- Live Telegram, MongoDB, and third-party shortener round trips were not available in this environment, so the end-to-end runtime fix must still be verified against a staging bot.
+
+## Important scope note
+
+This follow-up fixes the confirmed `/start` reaction-abort risk and PM global-language onboarding gap. It does not claim that every IMDX performance/search implementation detail has been ported; `plugins/pm_filter.py` still differs from IMDX in other areas, including IMDX-specific spelling-correction and search enhancements. The three-step shortener flow remains separate from Devil's legacy shortener flow.
