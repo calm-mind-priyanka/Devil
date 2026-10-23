@@ -41,7 +41,7 @@ import random
 
 lock = asyncio.Lock()
 import traceback
-from fuzzywuzzy import process
+from rapidfuzz import process, fuzz
 
 BUTTONS = {}
 FILES_ID = {}
@@ -108,7 +108,13 @@ logger.setLevel(logging.ERROR)
 
 @Client.on_message(filters.private & filters.text & filters.incoming)
 async def pm_search(client, message):
-    await mdb.update_top_messages(message.from_user.id, message.text)
+    # Analytics must never block /start-adjacent private searches when MongoDB
+    # is read-only, over quota, or temporarily unreachable.
+    try:
+        if message.from_user:
+            await mdb.update_top_messages(message.from_user.id, message.text)
+    except Exception as exc:
+        logger.warning("Could not update PM search history; continuing search (%s)", type(exc).__name__)
     bot_id = client.me.id
     user_id = message.from_user.id
     # Match IMDX's global language onboarding: ordinary PM searches must not
@@ -152,7 +158,11 @@ async def pm_search(client, message):
 @Client.on_message(filters.group & filters.text & filters.incoming)
 async def group_search(client, message):
     # await message.react(emoji=random.choice(REACTIONS))
-    await mdb.update_top_messages(message.from_user.id, message.text)
+    try:
+        if message.from_user:
+            await mdb.update_top_messages(message.from_user.id, message.text)
+    except Exception as exc:
+        logger.warning("Could not update group search history; continuing search (%s)", type(exc).__name__)
     user_id = message.from_user.id if message.from_user else None
     chat_id = message.chat.id
     settings = await get_settings(chat_id)
@@ -447,6 +457,7 @@ async def seasons_cb_handler(client: Client, query: CallbackQuery):
     _, key, offset, req = query.data.split("#")
     if int(req) != query.from_user.id:
         return await query.answer(script.ALRT_TXT, show_alert=True)
+    ui_lang = await get_user_language(query.from_user.id, query.from_user)
     btn = []
     for i in range(0, len(SEASONS) - 1, 2):
         btn.append(
@@ -470,7 +481,7 @@ async def seasons_cb_handler(client: Client, query: CallbackQuery):
         ]
     )
     await query.message.edit_text(
-        "<b>ɪɴ ᴡʜɪᴄʜ sᴇᴀsᴏɴ ᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ, ᴄʜᴏᴏsᴇ ғʀᴏᴍ ʜᴇʀᴇ ↓↓</b>",
+        core_tr(ui_lang, "season_choose"),
         reply_markup=InlineKeyboardMarkup(btn),
     )
     return
@@ -829,6 +840,7 @@ async def quality_cb_handler(client: Client, query: CallbackQuery):
     _, key, offset, req = query.data.split("#")
     if int(req) != query.from_user.id:
         return await query.answer(script.ALRT_TXT, show_alert=True)
+    ui_lang = await get_user_language(query.from_user.id, query.from_user)
     btn = []
     for i in range(0, len(QUALITIES) - 1, 2):
         btn.append(
@@ -851,7 +863,7 @@ async def quality_cb_handler(client: Client, query: CallbackQuery):
         ]
     )
     await query.message.edit_text(
-        "<b>ɪɴ ᴡʜɪᴄʜ ǫᴜᴀʟɪᴛʏ ᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ, ᴄʜᴏᴏsᴇ ғʀᴏᴍ ʜᴇʀᴇ ↓↓</b>",
+        core_tr(ui_lang, "quality_choose"),
         reply_markup=InlineKeyboardMarkup(btn),
     )
     return
@@ -1008,6 +1020,7 @@ async def languages_cb_handler(client: Client, query: CallbackQuery):
     _, key, offset, req = query.data.split("#")
     if int(req) != query.from_user.id:
         return await query.answer(script.ALRT_TXT, show_alert=True)
+    ui_lang = await get_user_language(query.from_user.id, query.from_user)
     btn = []
     for i in range(0, len(LANGUAGES) - 1, 2):
         btn.append(
@@ -1030,7 +1043,7 @@ async def languages_cb_handler(client: Client, query: CallbackQuery):
         ]
     )
     await query.message.edit_text(
-        "<b>ɪɴ ᴡʜɪᴄʜ ʟᴀɴɢᴜᴀɢᴇ ᴅᴏ ʏᴏᴜ ᴡᴀɴᴛ, ᴄʜᴏᴏsᴇ ғʀᴏᴍ ʜᴇʀᴇ ↓↓</b>",
+        core_tr(ui_lang, "language_choose"),
         reply_markup=InlineKeyboardMarkup(btn),
     )
     return
@@ -2106,24 +2119,37 @@ async def cb_handler(client: Client, query: CallbackQuery):
 
 
 async def ai_spell_check(wrong_name):
-    async def search_movie(wrong_name):
-        search_results = imdb.search_movie(wrong_name)
-        movie_list = [movie["title"] for movie in search_results]
-        return movie_list
+    """Suggest a likely IMDb title without blocking Telegram's event loop."""
+    try:
+        search_results = await asyncio.to_thread(imdb.search_movie, wrong_name)
+    except Exception:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception("IMDb spelling lookup failed for query %r", wrong_name)
+        return None
 
-    movie_list = await search_movie(wrong_name)
+    movie_list = []
+    for item in search_results or []:
+        title = item.get("title") if isinstance(item, dict) else getattr(item, "title", None)
+        if title and title not in movie_list:
+            movie_list.append(str(title))
     if not movie_list:
-        return
-    for _ in range(5):
-        closest_match = process.extractOne(wrong_name, movie_list)
-        if not closest_match or closest_match[1] <= 80:
-            return
+        return None
+
+    # RapidFuzz is implemented in optimized native code and returns a 0..100
+    # score; only try strong matches, avoiding expensive blind retries.
+    for _ in range(min(5, len(movie_list))):
+        closest_match = process.extractOne(wrong_name, movie_list, scorer=fuzz.WRatio, score_cutoff=81)
+        if not closest_match:
+            return None
         movie = closest_match[0]
-        files, offset, total_results = await get_search_results(movie)
+        try:
+            files, _, _ = await get_search_results(movie)
+        except Exception:
+            return None
         if files:
             return movie
         movie_list.remove(movie)
-    return
+    return None
 
 
 async def auto_filter(client, msg, spoll=False, pm_mode=False):
@@ -2157,6 +2183,7 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
         message = msg.message.reply_to_message  # msg will be callback query
         search, files, offset, total_results = spoll
     req = message.from_user.id if message.from_user else 0
+    ui_lang = await get_user_language(req, message.from_user) if req else "en"
     key = f"{message.chat.id}-{message.id}"
     batch_ids = files
     temp.FILES_ID[f"{message.chat.id}-{message.id}"] = batch_ids
@@ -2204,11 +2231,11 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
         req = message.from_user.id if message.from_user else 0
         # Filters and Send All come after the file results, before pagination.
         btn.append([
-            InlineKeyboardButton("ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"languages#{key}#{offset}#{req}"),
-            InlineKeyboardButton("ǫᴜᴀʟɪᴛʏ", callback_data=f"qualities#{key}#{offset}#{req}"),
+            InlineKeyboardButton(tr(ui_lang, "language"), callback_data=f"languages#{key}#{offset}#{req}"),
+            InlineKeyboardButton(tr(ui_lang, "quality"), callback_data=f"qualities#{key}#{offset}#{req}"),
         ])
-        btn.append([InlineKeyboardButton("ꜱᴇᴀsᴏɴ", callback_data=f"seasons#{key}#{offset}#{req}")])
-        btn.append([InlineKeyboardButton("sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}")])
+        btn.append([InlineKeyboardButton(tr(ui_lang, "season"), callback_data=f"seasons#{key}#{offset}#{req}")])
+        btn.append([InlineKeyboardButton(tr(ui_lang, "send_all"), callback_data=f"send_all#{key}")])
         btn.append([
             InlineKeyboardButton(
                 text=f"1/{math.ceil(int(total_results) / max_results)}", callback_data="pages",
@@ -2226,12 +2253,12 @@ async def auto_filter(client, msg, spoll=False, pm_mode=False):
             offset = max_results
     else:
         btn.append([
-            InlineKeyboardButton("ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"languages#{key}#{offset}#{req}"),
-            InlineKeyboardButton("ǫᴜᴀʟɪᴛʏ", callback_data=f"qualities#{key}#{offset}#{req}"),
+            InlineKeyboardButton(tr(ui_lang, "language"), callback_data=f"languages#{key}#{offset}#{req}"),
+            InlineKeyboardButton(tr(ui_lang, "quality"), callback_data=f"qualities#{key}#{offset}#{req}"),
         ])
-        btn.append([InlineKeyboardButton("ꜱᴇᴀsᴏɴ", callback_data=f"seasons#{key}#{offset}#{req}")])
-        btn.append([InlineKeyboardButton("sᴇɴᴅ ᴀʟʟ ғɪʟᴇs", callback_data=f"send_all#{key}")])
-        btn.append([InlineKeyboardButton("↭ ɴᴏ ᴍᴏʀᴇ ᴘᴀɢᴇꜱ ᴀᴠᴀɪʟᴀʙʟᴇ ↭", user_id=ADMINS[0])])
+        btn.append([InlineKeyboardButton(tr(ui_lang, "season"), callback_data=f"seasons#{key}#{offset}#{req}")])
+        btn.append([InlineKeyboardButton(tr(ui_lang, "send_all"), callback_data=f"send_all#{key}")])
+        btn.append([InlineKeyboardButton(tr(ui_lang, "no_more"), user_id=ADMINS[0])])
     imdb = (
         await get_poster(search, file=(files[0]).file_name)
         if settings["imdb"]

@@ -284,24 +284,44 @@ async def global_language_callback(client: Client, query):
     from language import LANGUAGES
     if value not in LANGUAGES:
         return await query.answer("Language unavailable.", show_alert=True)
-    await db.update_user({"id": int(query.from_user.id), "language": value, "language_code": value})
-    await query.answer(tr(value, "language_saved"), show_alert=True)
-    # Rebuild the normal home menu immediately; this makes the global language
-    # control usable from /start instead of leaving the user on the picker.
+    # Persist the language before changing the message. If MongoDB is down,
+    # keep the picker visible and tell the user instead of pretending it saved.
+    try:
+        await db.update_user({
+            "id": int(query.from_user.id),
+            "name": query.from_user.first_name or "User",
+            "language": value,
+            "language_code": value,
+        })
+    except Exception:
+        logger.exception("Could not save global language for user %s", query.from_user.id)
+        try:
+            await query.answer("Could not save your language right now. Please try again.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    try:
+        await query.answer(tr(value, "language_saved"), show_alert=True)
+    except Exception:
+        pass
+    # Rebuild the normal home menu immediately after the language is persisted.
     markup = _global_home_markup(value)
     try:
-        if query.message and (query.message.photo or query.message.video or query.message.animation):
+        if query.message and (query.message.photo or query.message.video or query.message.animation or query.message.document):
             await query.message.edit_caption(
                 caption=core_tr(value, "start", mention=query.from_user.mention, status=get_status()),
                 reply_markup=markup, parse_mode=enums.ParseMode.HTML,
             )
-        else:
+        elif query.message:
             await query.message.edit_text(
                 core_tr(value, "start", mention=query.from_user.mention, status=get_status()),
                 reply_markup=markup, parse_mode=enums.ParseMode.HTML,
             )
-    except Exception:
-        logger.exception("Could not refresh home UI after global language change")
+    except Exception as exc:
+        from pyrogram.errors import MessageNotModified
+        if not isinstance(exc, MessageNotModified):
+            logger.exception("Could not refresh home UI after global language change")
 
 
 async def _edit_language_message(query, text, markup):
@@ -709,7 +729,10 @@ async def start(client: Client, message):
     # Normal private /start still requires a language selection. The verification
     # deep-link above is deliberately exempt so shortener returns always run.
     if message.chat.type == enums.ChatType.PRIVATE and not await has_saved_language(user_id):
-        await db.update_user({"id": int(user_id), "name": message.from_user.first_name})
+        try:
+            await db.update_user({"id": int(user_id), "name": message.from_user.first_name})
+        except Exception:
+            logger.exception("Could not initialize user record before language selection; showing picker anyway")
         await message.reply_text(
             tr("en", "language_title") + "\n\n" + tr("en", "language_body"),
             reply_markup=language_markup(),
