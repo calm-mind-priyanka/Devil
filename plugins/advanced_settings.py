@@ -1,4 +1,5 @@
 import asyncio
+import html
 import re
 import requests
 from pyrogram import Client, filters, enums, ContinuePropagation
@@ -13,6 +14,7 @@ from utils import (
     save_default_settings,
 )
 from database.users_chats_db import db
+from database.config_db import mdb
 
 
 # ============================================================
@@ -26,6 +28,15 @@ _AUTH_CACHE = {}
 _SETTINGS_CACHE = {}
 _AUTH_TTL = 15.0
 _SETTINGS_TTL = 1.5
+
+
+def _is_bot_owner(user_id):
+    """Global Premium-plan owner check; separate from group-admin permissions."""
+    try:
+        return int(user_id) == int(OWNER_ID)
+    except (TypeError, ValueError, NameError):
+        return False
+
 
 def _invalidate_settings_cache(gid):
     _SETTINGS_CACHE.pop(int(gid), None)
@@ -102,12 +113,12 @@ async def _group_title(client, group_id):
 # MAIN SETTINGS MENU
 # ============================================================
 
-def _main_settings_buttons(settings, grp_id):
+def _main_settings_buttons(settings, grp_id, include_premium=False):
 
     def onoff(key):
         return "ON ✅" if settings.get(key) else "OFF ❌"
 
-    return [
+    buttons = [
         [
             InlineKeyboardButton(
                 f"📝 ᴀᴜᴛᴏ ꜰɪʟᴛᴇʀ",
@@ -168,6 +179,11 @@ def _main_settings_buttons(settings, grp_id):
                 callback_data=f"set_page#details#{grp_id}"
             )
         ],
+        [InlineKeyboardButton(
+            f"📣 ɢʀᴏᴜᴘ ꜰsᴜʙ: {'ON ✅' if settings.get('fsub_enabled') else 'OFF ❌'}",
+            callback_data=f"set_toggle#fsub_enabled#{grp_id}"
+        )],
+        [InlineKeyboardButton("⚙️ NEW 3-STEP SETTINGS", callback_data=f"set_page#new_shortener#{grp_id}")],
         [
             InlineKeyboardButton(
                 "👥 ꜰᴏʀᴄᴇ ᴄʜᴀɴɴᴇʟ",
@@ -185,17 +201,30 @@ def _main_settings_buttons(settings, grp_id):
             )
         ],
     ]
+    if include_premium:
+        buttons.insert(0, [InlineKeyboardButton("💎 ᴘʀᴇᴍɪᴜᴍ ᴘʟᴀɴ sᴇᴛᴛɪɴɢs", callback_data=f"premium_settings#{grp_id}")])
+    return buttons
 
 
 # ============================================================
 # GROUP LIST & SETTINGS
 # ============================================================
 
+async def _global_payment_mode_button(group_id=None):
+    from plugins.premium_payments import get_auto_payment_enabled
+    enabled = await get_auto_payment_enabled()
+    state = "ON ✅" if enabled else "OFF ❌"
+    callback = "global_payment_mode#toggle"
+    if group_id is not None:
+        callback += f"#{int(group_id)}"
+    return InlineKeyboardButton(f"💳 GLOBAL AUTO PAYMENT: {state}", callback_data=callback)
+
+
 async def show_group_list(client, target, direct_group_id=None):
     user_id = target.from_user.id
     groups = []
 
-    async for chat in db.get_all_chats():
+    async for chat in await db.get_all_chats():
         gid = chat.get("id")
         if not gid:
             continue
@@ -217,6 +246,16 @@ async def show_group_list(client, target, direct_group_id=None):
             pass
 
     if not groups:
+        if _is_bot_owner(user_id):
+            payment_button = await _global_payment_mode_button()
+            markup = InlineKeyboardMarkup([
+                [payment_button],
+                [InlineKeyboardButton("💎 ᴘʀᴇᴍɪᴜᴍ ᴘʟᴀɴ sᴇᴛᴛɪɴɢs", callback_data="premium_settings#0")],
+            ])
+            text = "❌ <b>ɴᴏ ɢʀᴏᴜᴘs ᴀᴠᴀɪʟᴀʙʟᴇ.</b>\n\nᴍᴀɴᴀɢᴇ ɢʟᴏʙᴀʟ ᴀᴜᴛᴏ-ᴘᴀʏᴍᴇɴᴛ ᴀɴᴅ ᴘʀᴇᴍɪᴜᴍ ᴘʟᴀɴs ʙᴇʟᴏᴡ."
+            if target.chat.type == enums.ChatType.PRIVATE:
+                return await target.reply_text(text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+            return await target.message.reply_text(text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
         text = "❌ <b>ɪ ᴄᴏᴜʟᴅ ɴᴏᴛ ғɪɴᴅ ᴀɴʏ ɢʀᴏᴜᴘs ᴡʜᴇʀᴇ ʏᴏᴜ ᴀʀᴇ ᴀɴ ᴀᴅᴍɪɴ.</b>"
         if target.chat.type == enums.ChatType.PRIVATE:
             return await target.reply_text(text)
@@ -226,6 +265,9 @@ async def show_group_list(client, target, direct_group_id=None):
         [InlineKeyboardButton(f"{title} · {gid}", callback_data=f"set_group#{gid}")]
         for gid, title in groups
     ]
+    if _is_bot_owner(user_id):
+        buttons.insert(0, [InlineKeyboardButton("💎 ᴘʀᴇᴍɪᴜᴍ ᴘʟᴀɴ sᴇᴛᴛɪɴɢs", callback_data="premium_settings#0")])
+        buttons.insert(0, [await _global_payment_mode_button()])
     markup = InlineKeyboardMarkup(buttons)
     text = "⚙️ <b>ꜱᴇʟᴇᴄᴛ ᴛʜᴇ ɢʀᴏᴜᴘ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ᴍᴀɴᴀɢᴇ:</b>"
 
@@ -251,7 +293,10 @@ async def show_group_settings(client, target, grp_id):
         "sᴇʟᴇᴄᴛ ᴏɴᴇ ᴏꜰ ᴛʜᴇ sᴇᴛᴛɪɴɢs ᴛʜᴀᴛ ʏᴏᴜ ᴡᴀɴᴛ ᴛᴏ ᴄʜᴀɴɢᴇ "
         "ᴀᴄᴄᴏʀᴅɪɴɢ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ..."
     )
-    markup = InlineKeyboardMarkup(_main_settings_buttons(settings, int(grp_id)))
+    setting_buttons = _main_settings_buttons(settings, int(grp_id), include_premium=_is_bot_owner(user_id))
+    if _is_bot_owner(user_id):
+        setting_buttons.insert(0, [await _global_payment_mode_button(int(grp_id))])
+    markup = InlineKeyboardMarkup(setting_buttons)
 
     if hasattr(target, "message"):
         await target.message.edit_text(text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
@@ -306,8 +351,40 @@ def _page_text(key, settings):
     if key == "request_channel":
         return f"<b>📢 SET MOVIE REQ</b>\n\nCurrent request channel: <code>{settings.get('request_channel', REQUEST_CHANNEL)}</code>"
     if key == "fsub":
-        channels = settings.get("fsub_channels") or [settings.get("fsub_id", AUTH_CHANNEL)]
-        return "<b>📢 FORCE CHANNEL</b>\n\nMultiple force-subscribe channels are supported.\n\n" + "\n".join(f"• <code>{c}</code>" for c in channels)
+        channels = settings.get("fsub_channels") or []
+        details = settings.get("fsub_channel_details") or {}
+        channel_lines = []
+        for channel_id in channels:
+            detail = details.get(str(channel_id), {}) if isinstance(details, dict) else {}
+            title = html.escape(str(detail.get("title") or "Channel title unavailable"))
+            username = html.escape(str(detail.get("username") or "").strip())
+            link = f" (@{username})" if username else ""
+            channel_lines.append(
+                f"• <b>{title}</b>{link}\n  ID: <code>{channel_id}</code>"
+            )
+        return ("<b>📢 GROUP FORCE SUBSCRIPTION</b>\n\n"
+                + "Group-specific FSUB: " + ("ON ✅" if settings.get("fsub_enabled") else "OFF ❌")
+                + "\nGlobal AUTH_CHANNEL/AUTH_REQ_CHANNEL remains enforced for compatibility.\n\n"
+                + ("\n".join(channel_lines) or "No group-specific channels configured."))
+    if key == "new_shortener":
+        return ("<b>🔗 ɴᴇᴡ 3-sᴛᴇᴘ ꜱʜᴏʀᴛᴇɴᴇʀ</b>\n\n"
+                f"Status: <b>{'ᴏɴ ✅' if settings.get('new_shortener_enabled') else 'ᴏꜰꜰ ❌'}</b>\n\n"
+                "Select a section below to configure its URL, API key, tutorial, or timing.")
+    if key in {"new_shortener_step1", "new_shortener_step2", "new_shortener_step3"}:
+        number = int(key[-1])
+        def shown(k):
+            return html.escape(str(settings.get(k) or "ɴᴏᴛ ꜱᴇᴛ"))
+        suffix = {1: "sᴛ", 2: "ɴᴅ", 3: "ʀᴅ"}[number]
+        return (f"<b>🔗 {number}{suffix} ꜱʜᴏʀᴛʟɪɴᴋ ꜱᴇᴛᴛɪɴɢs</b>\n\n"
+                f"🌐 ᴡᴇʙsɪᴛᴇ: <code>{shown(f'new_shortener_step{number}_url')}</code>\n"
+                f"🔑 ᴀᴘɪ ᴋᴇʏ: <code>{shown(f'new_shortener_api{number}')}</code>\n"
+                f"📚 ᴛᴜᴛᴏʀɪᴀʟ: {shown(f'new_shortener_tutorial{number}')}")
+    if key == "new_shortener_tutorials":
+        return "<b>📚 ɴᴇᴡ 3-sᴛᴇᴘ ᴛᴜᴛᴏʀɪᴀʟs</b>\n\nConfigure a separate tutorial for each step."
+    if key == "new_shortener_gaps":
+        return ("<b>⏱️ ɴᴇᴡ 3-sᴛᴇᴘ ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ɢᴀᴘs</b>\n\n"
+                f"Step 1 gap: <code>{settings.get('new_shortener_gap1', THREE_VERIFY_GAP)}</code> sec\n"
+                f"Step 2 gap: <code>{settings.get('new_shortener_gap2', THREE_VERIFY_GAP)}</code> sec")
     if key == "max_results":
         return f"<b>🔢 SET MAX RESULTS</b>\n\nCurrent: <code>{settings.get('max_results', MAX_BTN)}</code>\nAllowed: 1–20"
     if key == "details":
@@ -509,10 +586,32 @@ def _page_buttons(key, settings, grp_id):
             InlineKeyboardButton("ᴅᴇʟᴇᴛᴇ ᴄʜᴀɴɴᴇʟ", callback_data=f"set_delete#request_channel#{grp_id}")
         ]]
     elif key == "fsub":
-        b = [[
-            InlineKeyboardButton("sᴇᴛ ᴄʜᴀɴɴᴇʟ", callback_data=f"set_input#fsub_add#{grp_id}"),
-            InlineKeyboardButton("ᴅᴇʟᴇᴛᴇ ᴄʜᴀɴɴᴇʟ", callback_data=f"set_input#fsub_delete#{grp_id}")
-        ]]
+        b = [
+            [InlineKeyboardButton("sᴇᴛ ᴄʜᴀɴɴᴇʟ", callback_data=f"set_input#fsub_add#{grp_id}"),
+             InlineKeyboardButton("ᴅᴇʟᴇᴛᴇ ᴄʜᴀɴɴᴇʟ", callback_data=f"set_input#fsub_delete#{grp_id}")],
+            [InlineKeyboardButton("ᴄᴜsᴛᴏᴍ ᴊᴏɪɴ ʙᴜᴛᴛᴏɴ ʟᴀʙᴇʟ", callback_data=f"set_input#fsub_label#{grp_id}"),
+             InlineKeyboardButton("ʀᴇsᴇᴛ ʟᴀʙᴇʟ", callback_data=f"set_input#fsub_label_reset#{grp_id}")],
+        ]
+    elif key == "new_shortener":
+        toggle_label = "🔴 ᴛᴜʀɴ ᴏꜰꜰ ɴᴇᴡ 3-sᴛᴇᴘ" if settings.get("new_shortener_enabled") else "🟢 ᴛᴜʀɴ ᴏɴ ɴᴇᴡ 3-sᴛᴇᴘ"
+        b = [
+            [InlineKeyboardButton(toggle_label, callback_data=f"set_toggle#new_shortener_enabled#{grp_id}#new_shortener")],
+            [InlineKeyboardButton("1ꜱᴛ ꜱʜᴏʀᴛʟɪɴᴋ", callback_data=f"set_page#new_shortener_step1#{grp_id}"), InlineKeyboardButton("2ɴᴅ ꜱʜᴏʀᴛʟɪɴᴋ", callback_data=f"set_page#new_shortener_step2#{grp_id}")],
+            [InlineKeyboardButton("3ʀᴅ ꜱʜᴏʀᴛʟɪɴᴋ", callback_data=f"set_page#new_shortener_step3#{grp_id}")],
+            [InlineKeyboardButton("📚 ᴛᴜᴛᴏʀɪᴀʟ sᴇᴛᴛɪɴɢs", callback_data=f"set_page#new_shortener_tutorials#{grp_id}"), InlineKeyboardButton("⏱️ ɢᴀᴘ sᴇᴛᴛɪɴɢs", callback_data=f"set_page#new_shortener_gaps#{grp_id}")],
+        ]
+    elif key in {"new_shortener_step1", "new_shortener_step2", "new_shortener_step3"}:
+        number = int(key[-1])
+        b = [
+            [InlineKeyboardButton("🌐 ꜱᴇᴛ ᴡᴇʙsɪᴛᴇ ᴜʀʟ", callback_data=f"set_input#new_shortener_step{number}_url#{grp_id}")],
+            [InlineKeyboardButton("🔑 ꜱᴇᴛ ᴀᴘɪ ᴋᴇʏ", callback_data=f"set_input#new_shortener_api{number}#{grp_id}")],
+            [InlineKeyboardButton("📚 ꜱᴇᴛ ᴛᴜᴛᴏʀɪᴀʟ", callback_data=f"set_input#new_shortener_tutorial{number}#{grp_id}")],
+            _back(grp_id, "new_shortener"),
+        ]
+    elif key == "new_shortener_tutorials":
+        b = [[InlineKeyboardButton("sᴇᴛ ᴛᴜᴛᴏʀɪᴀʟ 1", callback_data=f"set_input#new_shortener_tutorial1#{grp_id}"), InlineKeyboardButton("sᴇᴛ ᴛᴜᴛᴏʀɪᴀʟ 2", callback_data=f"set_input#new_shortener_tutorial2#{grp_id}")], [InlineKeyboardButton("sᴇᴛ ᴛᴜᴛᴏʀɪᴀʟ 3", callback_data=f"set_input#new_shortener_tutorial3#{grp_id}"),], _back(grp_id, "new_shortener")]
+    elif key == "new_shortener_gaps":
+        b = [[InlineKeyboardButton("sᴇᴛ ɢᴀᴘ 1", callback_data=f"set_input#new_shortener_gap1#{grp_id}"), InlineKeyboardButton("sᴇᴛ ɢᴀᴘ 2", callback_data=f"set_input#new_shortener_gap2#{grp_id}")], _back(grp_id, "new_shortener")]
     elif key == "max_results":
         b = [[
             InlineKeyboardButton("sᴇᴛ ᴍᴀx ʀᴇsᴜʟᴛ", callback_data=f"set_input#max_results#{grp_id}"),
@@ -592,7 +691,50 @@ async def _edit_prompt(client, state, text, markup=None):
         return None
 
 
+def _parse_premium_duration(value):
+    """Parse Premium duration in days, weeks, months, years, or lifetime.
+
+    Premium expiry is stored canonically as ``days`` because the payment
+    system calculates expiry from that field.  The human-facing ``duration``
+    keeps the unit the owner entered, so both formats remain supported.
+
+    Supported examples: 7d, 30 days, 1w, 2 weeks, 1mo, 3 months,
+    1y, 2 years, lifetime.  Month = 30 days; year = 365 days.
+    """
+    normalized = re.sub(r"\s+", " ", str(value).strip().lower())
+    if normalized in {"lifetime", "life time", "life", "forever"}:
+        return None, "Lifetime"
+
+    m = re.fullmatch(
+        r"(\d+)\s*(d|day|days|w|week|weeks|mo|mon|month|months|y|yr|year|years)",
+        normalized,
+    )
+    if not m:
+        return False, None
+
+    n = int(m.group(1))
+    if n <= 0:
+        return False, None
+
+    unit = m.group(2)
+    if unit in {"d", "day", "days"}:
+        days = n
+        label = f"{n} day" + ("s" if n != 1 else "")
+    elif unit in {"w", "week", "weeks"}:
+        days = n * 7
+        label = f"{n} week" + ("s" if n != 1 else "")
+    elif unit in {"mo", "mon", "month", "months"}:
+        days = n * 30
+        label = f"{n} month" + ("s" if n != 1 else "")
+    else:
+        days = n * 365
+        label = f"{n} year" + ("s" if n != 1 else "")
+
+    return days, label
+
+
 def _parse_duration(value):
+    # Keep the existing helper used by non-Premium settings unchanged.
     m = re.fullmatch(r"\s*(\d+)\s*([smhd])\s*", value.lower())
     if not m:
         return None
@@ -605,6 +747,176 @@ def _parse_duration(value):
 # ============================================================
 # CALLBACK & MESSAGE HANDLERS
 # ============================================================
+
+def _premium_admin_text():
+    rows = []
+    for key, plan in PREMIUM_PLANS.items():
+        rows.append(f"<b>{plan['name']}</b> · <code>{plan['duration']}</code> · <code>{plan['price']}</code>")
+    return "💎 <b>ᴘʀᴇᴍɪᴜᴍ ᴘʟᴀɴ sᴇᴛᴛɪɴɢs</b>\n\n" + "\n".join(rows) + "\n\nꜱᴇʟᴇᴄᴛ ᴀ ᴘʟᴀɴ ᴛᴏ ᴄʜᴀɴɢᴇ ɪᴛ."
+
+
+def _premium_admin_buttons(group_id=None):
+    rows = []
+    for key, plan in PREMIUM_PLANS.items():
+        rows.append([InlineKeyboardButton(f"{plan['name']} · {plan['price']}", callback_data=f"premium_plan#{key}#{group_id or 0}")])
+    if group_id:
+        rows.append([InlineKeyboardButton("≪ ʙᴀᴄᴋ ᴛᴏ sᴇᴛᴛɪɴɢs", callback_data=f"premium_back#{group_id}")])
+    return rows
+
+
+def _premium_plan_buttons(key, group_id=None):
+    rows = [
+        [InlineKeyboardButton("💰 sᴇᴛ ᴘʀɪᴄᴇ", callback_data=f"premium_edit#{key}#price#{group_id or 0}")],
+        [InlineKeyboardButton("⏳ sᴇᴛ ᴅᴜʀᴀᴛɪᴏɴ", callback_data=f"premium_edit#{key}#duration#{group_id or 0}")],
+        [InlineKeyboardButton("≪ ʙᴀᴄᴋ", callback_data=f"premium_settings#{group_id or 0}")],
+    ]
+    return rows
+
+
+def _premium_input_markup(key, field, group_id=None):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✕ ᴄᴀɴᴄᴇʟ", callback_data=f"premium_cancel#{key}#{field}#{group_id or 0}")],
+        [InlineKeyboardButton("≪ ʙᴀᴄᴋ", callback_data=f"premium_plan#{key}#{group_id or 0}")],
+    ])
+
+
+def _premium_plan_text(key):
+    plan = PREMIUM_PLANS[key]
+    return f"💎 <b>{plan['name']}</b>\n\n💰 Price: <code>{plan['price']}</code>\n⏳ Duration: <code>{plan['duration']}</code>\n\nChoose what you want to change."
+
+
+@Client.on_callback_query(filters.regex(r"^premium_(settings|plan#|edit#|cancel#|back#|close)"))
+async def premium_settings_callback(client, query):
+    if not _is_bot_owner(query.from_user.id):
+        return await query.answer("ᴏɴʟʏ ᴛʜᴇ ʙᴏᴛ ᴏᴡɴᴇʀ ᴄᴀɴ ᴄʜᴀɴɢᴇ ᴘʀᴇᴍɪᴜᴍ ᴘʟᴀɴs.", show_alert=True)
+
+    data = query.data
+    parts = data.split("#")
+    group_id = 0
+    if len(parts) > 1 and parts[-1].lstrip("-").isdigit():
+        group_id = int(parts[-1])
+
+    try:
+        if data.startswith("premium_settings"):
+            PENDING.pop((query.from_user.id, 0), None)
+            await query.answer()
+            return await query.message.edit_text(
+                _premium_admin_text(),
+                reply_markup=InlineKeyboardMarkup(_premium_admin_buttons(group_id)),
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        if data.startswith("premium_back#"):
+            PENDING.pop((query.from_user.id, 0), None)
+            await query.answer()
+            if group_id:
+                return await show_group_settings(client, query, group_id)
+            return await query.message.edit_text(
+                _premium_admin_text(),
+                reply_markup=InlineKeyboardMarkup(_premium_admin_buttons()),
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        if data == "premium_close":
+            PENDING.pop((query.from_user.id, 0), None)
+            await query.answer("Closed")
+            return await query.message.delete()
+
+        if data.startswith("premium_cancel#"):
+            await query.answer("Cancelled")
+            key = parts[1]
+            if key not in PREMIUM_PLANS:
+                return
+            PENDING.pop((query.from_user.id, 0), None)
+            return await query.message.edit_text(
+                _premium_plan_text(key),
+                reply_markup=InlineKeyboardMarkup(_premium_plan_buttons(key, group_id)),
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        if data.startswith("premium_plan#"):
+            PENDING.pop((query.from_user.id, 0), None)
+            await query.answer()
+            key = parts[1]
+            if len(parts) > 2 and parts[2].lstrip("-").isdigit():
+                group_id = int(parts[2])
+            if key not in PREMIUM_PLANS:
+                return await query.answer("Invalid plan.", show_alert=True)
+            return await query.message.edit_text(
+                _premium_plan_text(key),
+                reply_markup=InlineKeyboardMarkup(_premium_plan_buttons(key, group_id)),
+                parse_mode=enums.ParseMode.HTML,
+            )
+
+        if data.startswith("premium_edit#"):
+            await query.answer()
+            if len(parts) < 3:
+                return await query.answer("Invalid setting.", show_alert=True)
+            key, field = parts[1], parts[2]
+            if len(parts) > 3 and parts[3].lstrip("-").isdigit():
+                group_id = int(parts[3])
+            if key not in PREMIUM_PLANS or field not in {"price", "duration"}:
+                return await query.answer("Invalid setting.", show_alert=True)
+
+            PENDING[(query.from_user.id, 0)] = {
+                "type": f"premium_{field}",
+                "plan": key,
+                "origin_page": "premium_settings",
+                "group_id": group_id,
+                "prompt_chat_id": query.message.chat.id,
+                "prompt_message_id": query.message.id,
+            }
+            if field == "price":
+                prompt = "sᴇɴᴅ ᴛʜᴇ ᴘʀɪᴄᴇ ᴏɴʟʏ, ᴇ.ɢ. <code>23</code>"
+                current = PREMIUM_PLANS[key]["price"]
+            else:
+                prompt = (
+                    "sᴇɴᴅ ᴅᴜʀᴀᴛɪᴏɴ: <code>7d</code>, <code>1week</code>, "
+                    "<code>30days</code>, <code>1month</code>, <code>3months</code>, "
+                    "<code>1year</code> ᴏʀ <code>lifetime</code>"
+                )
+                current = PREMIUM_PLANS[key]["duration"]
+            return await query.message.edit_text(
+                f"<b>{prompt}</b>\n\nCurrent: <code>{current}</code>\n\nᴜsᴇ ᴛʜᴇ ᴄᴀɴᴄᴇʟ ʙᴜᴛᴛᴏɴ ᴏʀ sᴇɴᴅ /cancel.",
+                reply_markup=_premium_input_markup(key, field, group_id),
+                parse_mode=enums.ParseMode.HTML,
+            )
+    except Exception as exc:
+        print(f"premium settings callback error: {exc}")
+        try:
+            return await query.answer("💔 sᴏᴍᴇᴛʜɪɴɢ ᴡᴇɴᴛ ᴡʀᴏɴɢ...", show_alert=True)
+        except Exception:
+            return
+
+@Client.on_callback_query(filters.regex(r"^global_payment_mode#toggle(?:#-?\d+)?$"))
+async def global_payment_mode_callback(client, query):
+    if not _is_bot_owner(query.from_user.id):
+        return await query.answer("Only the bot owner can change global auto-payment mode.", show_alert=True)
+    try:
+        from plugins.premium_payments import get_auto_payment_enabled, set_auto_payment_enabled
+        current = await get_auto_payment_enabled()
+        updated = await set_auto_payment_enabled(not current)
+        state = "ON ✅ — users will see the payment-bot button only." if updated else "OFF ❌ — users will see the owner button only."
+        await query.answer(f"Auto-payment is now {'ON' if updated else 'OFF'}.", show_alert=True)
+        parts = query.data.split("#")
+        group_id = int(parts[2]) if len(parts) > 2 else None
+        if group_id is not None and group_id != 0:
+            return await show_group_settings(client, query, group_id)
+        try:
+            await query.message.edit_text(
+                f"💳 <b>GLOBAL AUTO-PAYMENT SETTING</b>\n\n{state}\n\nThis setting applies globally to every group.",
+                reply_markup=InlineKeyboardMarkup([
+                    [await _global_payment_mode_button()],
+                    [InlineKeyboardButton("↩️ BACK TO SETTINGS", callback_data="advanced_settings")],
+                ]),
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception:
+            pass
+    except Exception as exc:
+        print(f"global auto-payment setting error: {type(exc).__name__}: {exc}")
+        return await query.answer("Could not save global auto-payment setting. Check MongoDB logs.", show_alert=True)
+
 
 @Client.on_callback_query(filters.regex(r"^(set_|advanced_settings)"))
 async def settings_callback(client, query):
@@ -685,8 +997,8 @@ async def settings_callback(client, query):
             value = not bool(settings.get(key))
             await save_group_settings(gid, key, value)
             _invalidate_settings_cache(gid)
-            if len(parts) > 3 and parts[3] == "shortlink":
-                return await show_page(client, query, "shortlink", gid)
+            if len(parts) > 3 and parts[3] in {"shortlink", "new_shortener"}:
+                return await show_page(client, query, parts[3], gid)
             return await show_page(client, query, key, gid)
 
         if action == "set_default":
@@ -710,9 +1022,21 @@ async def settings_callback(client, query):
                 "request_channel": "request_channel",
                 "fsub_add": "fsub",
                 "fsub_delete": "fsub",
+                "fsub_label": "fsub",
+                "fsub_label_reset": "fsub",
+            }
+            new_shortener_keys = {
+                "new_shortener_step1_url", "new_shortener_step2_url", "new_shortener_step3_url",
+                "new_shortener_api1", "new_shortener_api2", "new_shortener_api3",
+                "new_shortener_tutorial1", "new_shortener_tutorial2", "new_shortener_tutorial3",
+                "new_shortener_gap1", "new_shortener_gap2",
             }
             origin_page = (
-                "shortlink_list" if key in {"shortner", "shortner_two", "shortner_three"}
+                ("new_shortener_step" + key[-1] if key.startswith("new_shortener_api") else
+                 "new_shortener_step" + key[len("new_shortener_step")] if key.startswith("new_shortener_step") and key.endswith("_url") else
+                 "new_shortener_tutorials" if key.startswith("new_shortener_tutorial") else
+                 "new_shortener_gaps" if key.startswith("new_shortener_gap") else "new_shortener") if key in new_shortener_keys
+                else "shortlink_list" if key in {"shortner", "shortner_two", "shortner_three"}
                 else "verification_gap" if key in {"verify_time", "third_verify_time"}
                 else "tutorial" if key in {"tutorial", "tutorial_2", "tutorial_3"}
                 else origin_page_map.get(key, "main")
@@ -726,6 +1050,19 @@ async def settings_callback(client, query):
                 "request_channel": "sᴇɴᴅ ʀᴇǫᴜᴇsᴛ ᴄʜᴀɴɴᴇʟ ɪᴅ.",
                 "fsub_add": "sᴇɴᴅ ꜰᴏʀᴄᴇ-sᴜʙsᴄʀɪʙᴇ ᴄʜᴀɴɴᴇʟ ɪᴅ.",
                 "fsub_delete": "sᴇɴᴅ ᴛʜᴇ ꜰᴏʀᴄᴇ-sᴜʙsᴄʀɪʙᴇ ᴄʜᴀɴɴᴇʟ ɪᴅ ᴛᴏ ᴅᴇʟᴇᴛᴇ.",
+                "fsub_label": "Send channel ID and button text separated by | (example: -1001234567890 | Join Movie Channel).",
+                "fsub_label_reset": "Send the channel ID whose custom join-button text should be reset.",
+                "new_shortener_step1_url": "Send Step 1 shortener domain/URL (http/https URL or domain).",
+                "new_shortener_step2_url": "Send Step 2 shortener domain/URL (http/https URL or domain).",
+                "new_shortener_step3_url": "Send Step 3 shortener domain/URL (http/https URL or domain).",
+                "new_shortener_api1": "Send Step 1 shortener API key.",
+                "new_shortener_api2": "Send Step 2 shortener API key.",
+                "new_shortener_api3": "Send Step 3 shortener API key.",
+                "new_shortener_tutorial1": "Send Step 1 tutorial URL.",
+                "new_shortener_tutorial2": "Send Step 2 tutorial URL.",
+                "new_shortener_tutorial3": "Send Step 3 tutorial URL.",
+                "new_shortener_gap1": "Send the Step 1 verification gap in seconds.",
+                "new_shortener_gap2": "Send the Step 2 verification gap in seconds.",
                 "tutorial": "sᴇɴᴅ ᴛᴜᴛᴏʀɪᴀʟ 1 ᴜʀʟ.",
                 "tutorial_2": "sᴇɴᴅ ᴛᴜᴛᴏʀɪᴀʟ 2 ᴜʀʟ.",
                 "tutorial_3": "sᴇɴᴅ ᴛᴜᴛᴏʀɪᴀʟ 3 ᴜʀʟ.",
@@ -768,6 +1105,8 @@ async def settings_callback(client, query):
             _invalidate_settings_cache(gid)
             await save_group_settings(gid, api_key, "")
             _invalidate_settings_cache(gid)
+            if _is_bot_owner(query.from_user.id):
+                await db.set_owner_shortener(number, "", "")
             return await show_page(client, query, "shortener", gid, number)
 
         if action == "set_delete_shortner":
@@ -779,6 +1118,9 @@ async def settings_callback(client, query):
                     _invalidate_settings_cache(gid)
                     await save_group_settings(gid, api_key, "")
                     _invalidate_settings_cache(gid)
+                if _is_bot_owner(query.from_user.id):
+                    for slot in (1, 2, 3):
+                        await db.set_owner_shortener(slot, "", "")
                 return await query.message.edit_text(
                     "<b>ᴅᴇʟᴇᴛᴇ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ ✅</b>",
                     reply_markup=InlineKeyboardMarkup([_back(gid, "shortlink_list")]),
@@ -835,6 +1177,23 @@ async def advanced_cancel(client, message):
     (uid, gid), state = candidates[-1]
     PENDING.pop((uid, gid), None)
     page = state.get("origin_page", "main")
+    if page == "premium_settings" and _is_bot_owner(uid):
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        try:
+            group_id = int(state.get("group_id") or 0)
+            await client.edit_message_text(
+                state["prompt_chat_id"],
+                state["prompt_message_id"],
+                _premium_plan_text(state["plan"]),
+                reply_markup=InlineKeyboardMarkup(_premium_plan_buttons(state["plan"], group_id)),
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception:
+            pass
+        return
 
     # Delete the user's /cancel command immediately.
     try:
@@ -870,15 +1229,81 @@ async def advanced_input(client, message):
     if message.text.startswith("/"):
         raise ContinuePropagation
 
-    if not await is_check_admin(client, gid, uid):
-        PENDING.pop((user_id, gid), None)
-        raise ContinuePropagation
+    # Premium plan input is global and restricted to bot ADMINS; it does not
+    # belong to a Telegram group, so do not run the group-admin check for it.
+    if state.get("type") not in {"premium_price", "premium_duration"}:
+        if not await is_check_admin(client, gid, uid):
+            PENDING.pop((user_id, gid), None)
+            raise ContinuePropagation
 
     value = message.text.strip()
     if not value:
         return await message.reply_text("ᴠᴀʟᴜᴇ ᴄᴀɴɴᴏᴛ ʙᴇ ᴇᴍᴘᴛʏ")
 
     key = state["type"]
+
+    if key in {"premium_price", "premium_duration"}:
+        if not _is_bot_owner(uid):
+            PENDING.pop((uid, 0), None)
+            raise ContinuePropagation
+        plan_key = state["plan"]
+        if plan_key not in PREMIUM_PLANS:
+            PENDING.pop((uid, 0), None)
+            return await message.reply_text("ᴘʟᴀɴ ɴᴏᴛ ғᴏᴜɴᴅ")
+        if key == "premium_price":
+            raw = value.replace("₹", "").replace(",", "").strip()
+            if not re.fullmatch(r"\d+(?:\.\d{1,2})?", raw) or float(raw) <= 0:
+                return await message.reply_text("sᴇɴᴅ ᴀ ᴠᴀʟɪᴅ ᴘʀɪᴄᴇ, ᴇ.ɢ. <code>23</code>", parse_mode=enums.ParseMode.HTML)
+            PREMIUM_PLANS[plan_key]["price"] = f"₹{raw.rstrip('0').rstrip('.') if '.' in raw else raw}"
+        else:
+            days, duration_label = _parse_premium_duration(value)
+            if days is False:
+                return await message.reply_text(
+                    "sᴇɴᴅ a valid duration like <code>7d</code>, <code>1week</code>, "
+                    "<code>30days</code>, <code>1month</code>, <code>3months</code>, "
+                    "<code>1year</code> or <code>lifetime</code>.",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            PREMIUM_PLANS[plan_key]["days"] = days
+            PREMIUM_PLANS[plan_key]["duration"] = duration_label
+
+            # Keep the public Premium-plan button label synchronized with the
+            # duration the owner just selected.  The payment UI uses
+            # PREMIUM_PLANS[...]["name"], so changing only `duration` would
+            # leave the old WEEK/MONTH/YEAR label visible to users.
+            if duration_label == "Lifetime":
+                PREMIUM_PLANS[plan_key]["name"] = "LIFE TIME"
+            else:
+                dm = re.fullmatch(r"(\d+)\s+(day|days|week|weeks|month|months|year|years)", duration_label, re.I)
+                if dm:
+                    amount = int(dm.group(1))
+                    unit = dm.group(2).upper()
+                    if amount == 1:
+                        unit = unit.rstrip("S")
+                    else:
+                        unit = unit.rstrip("S") + "S"
+                    PREMIUM_PLANS[plan_key]["name"] = f"{amount:02d} {unit}"
+        try:
+            await mdb.save_premium_plans(PREMIUM_PLANS)
+        except Exception as exc:
+            print(f"premium plan save error: {exc}")
+            return await _edit_prompt(
+                client,
+                state,
+                f"<b>💔 ᴄᴏᴜʟᴅ ɴᴏᴛ sᴀᴠᴇ ᴛʜɪs ᴘʟᴀɴ.</b>\n<code>{exc}</code>",
+                _premium_input_markup(plan_key, "price" if key == "premium_price" else "duration", state.get("group_id")),
+            )
+        PENDING.pop((uid, 0), None)
+        try: await message.delete()
+        except Exception: pass
+        group_id = int(state.get("group_id") or 0)
+        return await client.edit_message_text(
+            state["prompt_chat_id"],
+            state["prompt_message_id"],
+            _premium_plan_text(plan_key),
+            reply_markup=InlineKeyboardMarkup(_premium_plan_buttons(plan_key, group_id)),
+            parse_mode=enums.ParseMode.HTML,
+        )
 
     async def _delete_input_message():
         try:
@@ -930,6 +1355,13 @@ async def advanced_input(client, message):
         _invalidate_settings_cache(gid)
         await save_group_settings(gid, api_key, value)
         _invalidate_settings_cache(gid)
+
+        # The bot owner can change the master shortener from any group
+        # through /settings -> Shortlink. This updates the owner's global
+        # tracking identity, while other group admins remain free to keep
+        # their own group shortener without changing what counts as ours.
+        if _is_bot_owner(uid):
+            await db.set_owner_shortener(number, domain, value)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
         ordinal = "1ꜱᴛ" if number == 1 else "2ɴᴅ" if number == 2 else "3ʀᴅ"
@@ -996,7 +1428,7 @@ async def advanced_input(client, message):
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
-    elif key.startswith("tutorial"):
+    elif key.startswith("tutorial") or key.startswith("new_shortener_tutorial"):
         if not (value.startswith("http://") or value.startswith("https://")):
             return await message.reply_text("Send a valid http/https URL or /cancel")
         await save_group_settings(gid, key, value)
@@ -1004,7 +1436,11 @@ async def advanced_input(client, message):
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
-    elif key in {"shortner", "shortner_two", "shortner_three", "api", "api_two", "api_three", "verify_time", "third_verify_time"}:
+    elif key in {"shortner", "shortner_two", "shortner_three", "api", "api_two", "api_three", "verify_time", "third_verify_time",
+                 "new_shortener_step1_url", "new_shortener_step2_url", "new_shortener_step3_url",
+                 "new_shortener_api1", "new_shortener_api2", "new_shortener_api3"}:
+        if key.endswith("_url") and value and not (value.startswith("http://") or value.startswith("https://") or "." in value):
+            return await message.reply_text("Send a valid URL/domain or /cancel")
         await save_group_settings(gid, key, value)
         _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
@@ -1020,19 +1456,87 @@ async def advanced_input(client, message):
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
+    elif key == "fsub_label":
+        try:
+            channel_text, label = value.split("|", 1)
+            channel_id = int(channel_text.strip())
+            label = label.strip()
+            if not label or len(label) > 64:
+                raise ValueError
+        except (ValueError, TypeError):
+            return await message.reply_text("Use: CHANNEL_ID | Button text (1–64 characters).")
+        settings = await get_settings(gid)
+        channels = {str(k): str(v) for k, v in (settings.get("fsub_button_labels") or {}).items()}
+        if channel_id not in [int(c) for c in (settings.get("fsub_channels") or [])]:
+            return await message.reply_text("That channel is not configured for this group yet.")
+        channels[str(channel_id)] = label
+        await save_group_settings(gid, "fsub_button_labels", channels)
+        _invalidate_settings_cache(gid)
+        PENDING.pop((uid, gid), None)
+        await _delete_input_message()
+
+    elif key == "fsub_label_reset":
+        try:
+            channel_id = int(value.strip())
+        except (ValueError, TypeError):
+            return await message.reply_text("Send a valid channel ID or /cancel")
+        settings = await get_settings(gid)
+        channels = {str(k): str(v) for k, v in (settings.get("fsub_button_labels") or {}).items()}
+        channels.pop(str(channel_id), None)
+        await save_group_settings(gid, "fsub_button_labels", channels)
+        _invalidate_settings_cache(gid)
+        PENDING.pop((uid, gid), None)
+        await _delete_input_message()
+
+    elif key.startswith("new_shortener_gap"):
+        try:
+            gap = int(value)
+            if gap < 0 or gap > 86400:
+                raise ValueError
+        except (ValueError, TypeError):
+            return await message.reply_text("Send a number of seconds from 0 to 86400.")
+        await save_group_settings(gid, key, gap)
+        _invalidate_settings_cache(gid)
+        PENDING.pop((uid, gid), None)
+        await _delete_input_message()
+
     elif key == "fsub_add":
         try:
             value_int = int(value)
         except ValueError:
             return await message.reply_text("Send a valid channel ID or /cancel")
         settings = await get_settings(gid)
-        channels = list(settings.get("fsub_channels") or [])
-        if value_int not in channels:
+        channels = [int(c) for c in (settings.get("fsub_channels") or [])]
+        already_added = value_int in channels
+        if not already_added:
             channels.append(value_int)
+        details = dict(settings.get("fsub_channel_details") or {})
+        channel_title = "Channel title unavailable"
+        channel_username = ""
+        try:
+            chat = await client.get_chat(value_int)
+            channel_title = str(getattr(chat, "title", None) or getattr(chat, "first_name", None) or channel_title)
+            channel_username = str(getattr(chat, "username", None) or "")
+        except Exception:
+            # IDs can still be saved when Telegram cannot resolve a private
+            # channel; the settings page will clearly show that the title is
+            # unavailable rather than pretending the channel was not added.
+            pass
+        details[str(value_int)] = {"title": channel_title, "username": channel_username}
         await save_group_settings(gid, "fsub_channels", channels)
+        await save_group_settings(gid, "fsub_channel_details", details)
         _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
+        status = "already configured" if already_added else "added successfully"
+        safe_channel_title = html.escape(channel_title)
+        safe_channel_username = html.escape(channel_username)
+        await message.reply_text(
+            f"✅ <b>Force-subscription channel {status}.</b>\n\n"
+            f"Channel: <b>{safe_channel_title}</b>\nID: <code>{value_int}</code>"
+            + (f"\nUsername: @{safe_channel_username}" if channel_username else "\nUsername: unavailable/private"),
+            parse_mode=enums.ParseMode.HTML,
+        )
 
     elif key == "fsub_delete":
         try:
@@ -1041,9 +1545,11 @@ async def advanced_input(client, message):
             return await message.reply_text("Send a valid channel ID or /cancel")
         settings = await get_settings(gid)
         channels = [int(c) for c in (settings.get("fsub_channels") or []) if int(c) != value_int]
-        if not channels:
-            channels = [AUTH_CHANNEL]
         await save_group_settings(gid, "fsub_channels", channels)
+        labels = {str(k): v for k, v in (settings.get("fsub_button_labels") or {}).items() if str(k) != str(value_int)}
+        details = {str(k): v for k, v in (settings.get("fsub_channel_details") or {}).items() if str(k) != str(value_int)}
+        await save_group_settings(gid, "fsub_button_labels", labels)
+        await save_group_settings(gid, "fsub_channel_details", details)
         _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()

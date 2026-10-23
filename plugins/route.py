@@ -1,11 +1,12 @@
 from aiohttp import web
+from pyrogram import enums
 import re
 import math
 import logging
 import secrets
 import mimetypes
 from aiohttp.http_exceptions import BadStatusLine
-from Jisshu.bot import multi_clients, work_loads
+from Jisshu.bot import JisshuBot, multi_clients, work_loads
 from Jisshu.server.exceptions import FIleNotFound, InvalidHash
 from Jisshu.util.custom_dl import ByteStreamer
 from Jisshu.util.render_template import render_page
@@ -13,6 +14,87 @@ from info import *
 
 
 routes = web.RouteTableDef()
+
+
+@routes.get(r"/verify-click/{token}")
+async def verification_click_tracker(request: web.Request):
+    """Record the user's shortener-button click, then return to the bot."""
+    token = str(request.match_info.get("token") or "").strip()
+    if not token:
+        raise web.HTTPNotFound(text="Invalid verification link")
+
+    from database.users_chats_db import db
+    from utils import temp
+    import pytz
+    from datetime import datetime
+
+    record = await db.get_verify_id_by_return_token(token)
+    if not record or record.get("verified"):
+        raise web.HTTPGone(text="Verification link expired")
+
+    now = datetime.now(pytz.timezone("Asia/Kolkata"))
+    already_clicked = bool(record.get("shortlink_clicked_at"))
+    await db.update_verify_id_info(
+        int(record.get("user_id")),
+        str(record.get("hash")),
+        {"shortlink_clicked": True, "shortlink_clicked_at": now},
+    )
+
+    owner_tracking = False
+    try:
+        owner_tracking = bool(record.get("owner_shortener", False)) and int(record.get("owner_id")) == int(OWNER_ID)
+    except (TypeError, ValueError):
+        owner_tracking = False
+
+    if not already_clicked and owner_tracking:
+        try:
+            user = await JisshuBot.get_users(int(record.get("user_id")))
+            group_id = int(record.get("group_id") or 0)
+            group_name = "DIRECT PM"
+            group_link = "—"
+            if group_id:
+                try:
+                    chat = await JisshuBot.get_chat(group_id)
+                    group_name = chat.title or str(group_id)
+                    group_link = (
+                        f"https://t.me/{chat.username}"
+                        if chat.username else getattr(chat, "invite_link", None) or "Private / Invite link unavailable"
+                    )
+                except Exception:
+                    group_name = str(group_id)
+                    group_link = "Unavailable"
+
+            await JisshuBot.send_message(
+                (LINK_TRACK_CHANNEL or LOG_VR_CHANNEL),
+                "\n".join([
+                    "<b>🔎 SHORTENER TRACK — SHORTLINK_CLICKED</b>",
+                    f"👤 ᴜꜱᴇʀ: {user.mention} [ {user.id} ]",
+                    f"📊 ꜱᴛᴀᴛᴜꜱ: {int(record.get('step') or 1)}/3",
+                    f"📆 ᴅᴀᴛᴇ: {now.strftime('%-d %B %Y time %-I:%M%p %A')}",
+                    f"🤖 Bot: {getattr(JisshuBot, 'username', '')}",
+                    f"🏷️ Group Name: {group_name}",
+                    f"🔗 Group Link: {group_link}",
+                    f"Group: {group_id}",
+                    f"Mode: {record.get('mode', 'file')}",
+                    f"Domain: {record.get('shortener_domain', 'unknown')}",
+                    f"ShortURL: {str(record.get('shortlink') or '')[:700]}",
+                ]),
+                disable_web_page_preview=True,
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception:
+            logging.exception("Could not write shortlink click tracking log")
+
+    # temp.U_NAME is populated from the same bot account used by commands.py
+    # when the shortlink was created. Prefer it over a possibly stale class
+    # attribute on the aiohttp-side client.
+    bot_username = str(getattr(temp, "U_NAME", "") or getattr(JisshuBot, "username", "") or "").lstrip("@")
+    if not bot_username:
+        logging.error("Verification redirect failed: bot username is unavailable for token %s", token)
+        raise web.HTTPServiceUnavailable(text="Bot is starting")
+    redirect_url = f"https://t.me/{bot_username}?start=vr_{token}"
+    logging.info("Verification shortlink clicked; redirecting token %s to %s", token, redirect_url)
+    raise web.HTTPFound(redirect_url)
 
 
 @routes.get("/", allow_head=True)

@@ -2,7 +2,7 @@ import asyncio
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait
 from info import ADMINS, CHANNELS
-from database.ia_filterdb import save_file
+from database.ia_filterdb import save_file, notify_movie_storage_failure
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import temp, get_readable_time
 import time
@@ -159,6 +159,7 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot, skip):
                     duplicate += 1
                 elif sts == "err":
                     errors += 1
+                    await notify_movie_storage_failure(bot, "indexing write failed in every configured movie database")
         except FloodWait as e:
             await asyncio.sleep(e.x)
         except Exception as e:

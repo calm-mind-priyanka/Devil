@@ -1,13 +1,14 @@
 import os
+import html
 import requests
 import logging
 import random
 import asyncio
 import string
 import pytz
-from datetime import datetime as dt
+from datetime import datetime as dt, timedelta
 from Script import script
-from pyrogram import Client, filters, enums
+from pyrogram import Client, filters, enums, StopPropagation
 from pyrogram.errors import ChatAdminRequired
 from pyrogram.types import (
     InlineKeyboardButton,
@@ -41,11 +42,198 @@ from utils import (
 )
 import re
 import base64
+from shortzy import Shortzy
 from info import *
+from language import (
+    language_markup, has_saved_language, get_user_language, tr,
+    core_tr, home_tr, verify_tr, small_caps,
+)
 
-logger = logging.getLogger(__name__)
-movie_series_db = JsTopDB(DATABASE_URI)
-verification_ids = {}
+
+async def _build_fsub_caption(client, settings, channel_ids):
+    """Add readable channel names and IDs to the force-subscription caption."""
+    lines = []
+    details = settings.get("fsub_channel_details") or {}
+    seen = set()
+    for raw_id in channel_ids:
+        try:
+            channel_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if channel_id in seen:
+            continue
+        seen.add(channel_id)
+        detail = details.get(str(channel_id), {}) if isinstance(details, dict) else {}
+        title = str(detail.get("title") or "").strip()
+        username = str(detail.get("username") or "").strip().lstrip("@")
+        if not title:
+            try:
+                chat = await client.get_chat(channel_id)
+                title = str(getattr(chat, "title", None) or getattr(chat, "first_name", None) or "Channel")
+                username = str(getattr(chat, "username", None) or username).strip().lstrip("@")
+            except Exception:
+                title = "Channel title unavailable"
+        title_html = html.escape(title)
+        username_text = f" (@{html.escape(username)})" if username else ""
+        line = f"• <b>{title_html}</b>{username_text} — <code>{channel_id}</code>"
+        # Telegram photo captions have a 1024-character limit. Keep the static
+        # instructions and add as many required channels as safely fit.
+        candidate = "\n".join(lines + [line])
+        if len(script.FORCESUB_TEXT) + len("\n\n<b>Required channels:</b>\n") + len(candidate) > 1000:
+            lines.append("• Additional required channels are shown in the Join buttons.")
+            break
+        lines.append(line)
+    if not lines:
+        return script.FORCESUB_TEXT
+    return script.FORCESUB_TEXT + "\n\n<b>Required channels:</b>\n" + "\n".join(lines)
+HOME_AUTO_DELETE = max(60, int(os.environ.get("HOME_AUTO_DELETE", "600")))
+
+
+def _ist_now():
+    return dt.now(pytz.timezone("Asia/Kolkata"))
+
+
+async def _is_owner_shortener(domain, api=None):
+    """Return True only for one of the three shorteners owned by OWNER_ID."""
+    try:
+        int(OWNER_ID)
+    except (TypeError, ValueError):
+        return False
+    domain = str(domain or "").strip().lower()
+    domain = domain.replace("https://", "").replace("http://", "").rstrip("/")
+    api = str(api or "").strip()
+    if not domain or not api:
+        return False
+    owner_pairs = await db.get_owner_shortener_pairs()
+    return any(
+        (domain, api) == (
+            str(owner_domain).strip().lower().replace("https://", "").replace("http://", "").rstrip("/"),
+            str(owner_api).strip(),
+        )
+        for owner_domain, owner_api in (owner_pairs or [])
+        if owner_domain and owner_api
+    )
+
+
+def _is_owner_tracking_record(record):
+    """Only verification attempts explicitly stamped with BOT OWNER_ID are trackable."""
+    if not record or not record.get("owner_shortener", False):
+        return False
+    try:
+        return int(record.get("owner_id")) == int(OWNER_ID)
+    except (TypeError, ValueError):
+        return False
+
+
+async def _shortener_log(client, log_chat, event, user, step, **fields):
+    """Write shortener tracking events in the exact requested compact format."""
+    if not log_chat:
+        return
+
+    group_id = fields.get("Group")
+    is_direct_pm = group_id in (None, "", 0, "0")
+    group_name = "DIRECT PM"
+    group_link = "—"
+    if not is_direct_pm:
+        try:
+            chat = await client.get_chat(int(group_id))
+            group_name = chat.title or str(group_id)
+            if chat.username:
+                group_link = f"https://t.me/{chat.username}"
+            elif getattr(chat, "invite_link", None):
+                group_link = chat.invite_link
+            else:
+                group_link = "Private / Invite link unavailable"
+        except Exception:
+            group_name = str(group_id)
+            group_link = "Unavailable"
+
+    bot_name = "Unknown Bot"
+    bot_username = ""
+    try:
+        me = await client.get_me()
+        bot_name = me.first_name or me.username or "Unknown Bot"
+        bot_username = f"@{me.username}" if me.username else ""
+    except Exception:
+        pass
+
+    now = _ist_now()
+    date_text = now.strftime("%-d %B %Y time %-I:%M%p %A")
+    status = f"{int(step or 1)}/3"
+    lines = [
+        f"<b>🔎 SHORTENER TRACK — {event}</b>",
+        f"👤 ᴜꜱᴇʀ: {user.mention} [ <code>{user.id}</code> ]",
+        f"📊 ꜱᴛᴀᴛᴜꜱ: {status}",
+        f"📆 ᴅᴀᴛᴇ: {date_text}",
+        f"🤖 Bot: {bot_name} {bot_username}".rstrip(),
+        f"🏷️ Group Name: {group_name}",
+        f"🔗 Group Link: {group_link}",
+        f"Group: {0 if is_direct_pm else group_id}",
+    ]
+
+    mode = fields.get("Mode")
+    if mode is not None and mode != "":
+        lines.append(f"Mode: {mode}")
+    domain = fields.get("Domain")
+    if domain:
+        lines.append(f"Domain: {domain}")
+    api_key = fields.get("Api key")
+    if api_key:
+        lines.append(f"Api key: {api_key}")
+    short_url = fields.get("ShortURL")
+    if short_url:
+        lines.append(f"ShortURL: {short_url}")
+
+    # Keep diagnostics that are not part of the user-facing requested template
+    # out of SHORTLINK_CREATED/SHORTLINK_CLICKED messages. Error events may add
+    # their reason for debugging.
+    if event == "SHORTENER_API_ERROR" and fields.get("Error"):
+        lines.append(f"Error: {fields['Error']}")
+
+    try:
+        await client.send_message(
+            int(log_chat),
+            "\n".join(lines),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.exception("Could not write shortener diagnostic log")
+
+
+async def _mark_get_file_click(client, user, group_id, delivery_key):
+    """Record the final Telegram Get File/Send All deep-link separately."""
+    try:
+        record = await db.get_latest_verification_for_delivery(user.id, group_id, delivery_key)
+        if (not record or not record.get("verified") or record.get("get_file_clicked_at")
+                or not _is_owner_tracking_record(record)):
+            return
+        now = _ist_now()
+        await db.update_verify_id_info(
+            user.id, record["hash"],
+            {"get_file_clicked_at": now, "get_file_clicked": True},
+        )
+        settings = await get_settings(group_id)
+        step = int(record.get("step") or record.get("verification_step") or 1)
+        await _shortener_log(
+            client, (LINK_TRACK_CHANNEL or LOG_VR_CHANNEL), "GET_FILE_CLICKED", user, step,
+            Group=group_id, Mode=record.get("mode", "file"),
+            Domain=record.get("shortener_domain", "unknown"),
+            VerifyID=record.get("hash", ""), Delivery=delivery_key,
+            **{"Shortener return": "YES"},
+        )
+    except Exception:
+        logger.exception("Could not record Get File click")
+
+
+def _global_home_markup(lang):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(home_tr(lang, "add_group"), url=f"http://telegram.dog/{temp.U_NAME}?startgroup=start")],
+        [InlineKeyboardButton(home_tr(lang, "disable_ads"), callback_data="jisshupremium"), InlineKeyboardButton(home_tr(lang, "special"), callback_data="special")],
+        [InlineKeyboardButton(home_tr(lang, "help"), callback_data="help"), InlineKeyboardButton(home_tr(lang, "about"), callback_data="about")],
+        [InlineKeyboardButton(home_tr(lang, "earn"), callback_data="earn")],
+        [InlineKeyboardButton(tr(lang, "language_button"), callback_data="global_lang:menu")],
+        [InlineKeyboardButton(home_tr(lang, "clean"), callback_data="clean_home")],
+    ])
 
 
 def _file_mode_greeting():
@@ -85,11 +273,228 @@ def _file_mode_markup(settings, file_id):
     ])
 
 
+@Client.on_callback_query(filters.regex(r"^global_lang:"))
+async def global_language_callback(client: Client, query):
+    value = query.data.split(":", 1)[1]
+    if value == "menu":
+        lang = await get_user_language(query.from_user.id, query.from_user)
+        await query.answer()
+        text = tr(lang, "language_title") + "\n\n" + tr(lang, "language_body")
+        return await _edit_language_message(query, text, language_markup())
+    from language import LANGUAGES
+    if value not in LANGUAGES:
+        return await query.answer("Language unavailable.", show_alert=True)
+    await db.update_user({"id": int(query.from_user.id), "language": value, "language_code": value})
+    await query.answer(tr(value, "language_saved"), show_alert=True)
+    # Rebuild the normal home menu immediately; this makes the global language
+    # control usable from /start instead of leaving the user on the picker.
+    markup = _global_home_markup(value)
+    try:
+        if query.message and (query.message.photo or query.message.video or query.message.animation):
+            await query.message.edit_caption(
+                caption=core_tr(value, "start", mention=query.from_user.mention, status=get_status()),
+                reply_markup=markup, parse_mode=enums.ParseMode.HTML,
+            )
+        else:
+            await query.message.edit_text(
+                core_tr(value, "start", mention=query.from_user.mention, status=get_status()),
+                reply_markup=markup, parse_mode=enums.ParseMode.HTML,
+            )
+    except Exception:
+        logger.exception("Could not refresh home UI after global language change")
+
+
+async def _edit_language_message(query, text, markup):
+    try:
+        if query.message and (query.message.photo or query.message.video or query.message.animation):
+            return await query.message.edit_caption(caption=text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+        return await query.message.edit_text(text, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+    except Exception as exc:
+        from pyrogram.errors import MessageNotModified
+        if isinstance(exc, MessageNotModified):
+            return
+        logger.exception("Could not display global language picker")
+
+
+async def _delete_home_later(client, user_id, message_id, delay):
+    try:
+        await asyncio.sleep(delay)
+        await client.delete_messages(user_id, message_id)
+    except Exception:
+        pass
+
+
+@Client.on_callback_query(filters.regex(r"^clean_home$"), group=-1)
+async def clean_home_callback(client, query):
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    await query.answer("Home cleaned 🧹")
+    raise StopPropagation
+
+
+async def _new_shortener_make_url(domain, api, target):
+    """Create a URL for the group-specific three-step shortener.
+
+    LinkCut (linkcut.org) has its own GET API and JSON schema; it is not
+    compatible with assuming every provider follows Shortzy's API format.
+    Other providers continue to use the existing Shortzy integration.
+    """
+    if not domain or not api or not target:
+        return None
+    raw_domain = str(domain).strip()
+    if not raw_domain:
+        return None
+    normalized_domain = raw_domain.rstrip("/")
+    if normalized_domain.startswith(("http://", "https://")):
+        normalized_domain = normalized_domain.split("://", 1)[1]
+    normalized_domain = normalized_domain.split("/", 1)[0].strip().rstrip(".").lower()
+    if normalized_domain.startswith("www."):
+        normalized_domain = normalized_domain[4:]
+    if not normalized_domain:
+        return None
+
+    if normalized_domain == "linkcut.org":
+        import aiohttp
+        endpoint = "https://linkcut.org/api"
+        timeout = aiohttp.ClientTimeout(total=20, connect=8, sock_read=12)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    endpoint,
+                    params={"api": str(api).strip(), "url": str(target)},
+                    headers={"Accept": "application/json", "User-Agent": "IMDXBot/1.0"},
+                ) as response:
+                    body = await response.text()
+                    if response.status != 200:
+                        logger.warning(
+                            "LinkCut API returned HTTP %s (response starts: %r)",
+                            response.status, body[:180],
+                        )
+                        return None
+                    try:
+                        payload = await response.json(content_type=None)
+                    except (ValueError, aiohttp.ContentTypeError):
+                        logger.warning("LinkCut API returned non-JSON response (starts: %r)", body[:180])
+                        return None
+                    if not isinstance(payload, dict):
+                        logger.warning("LinkCut API returned unexpected JSON type: %s", type(payload).__name__)
+                        return None
+                    status = str(payload.get("status", "")).lower()
+                    short_url = payload.get("shortenedUrl")
+                    if status == "success" and isinstance(short_url, str):
+                        short_url = short_url.strip()
+                        if short_url.startswith(("https://", "http://")):
+                            return short_url
+                    logger.warning(
+                        "LinkCut API reported failure: status=%r message=%r",
+                        payload.get("status"), payload.get("message"),
+                    )
+                    return None
+        except asyncio.TimeoutError:
+            logger.warning("LinkCut API request timed out")
+            return None
+        except Exception:
+            logger.exception("LinkCut API request failed")
+            return None
+
+    shortener = Shortzy(str(api).strip(), normalized_domain)
+    try:
+        result = await shortener.convert(target)
+        if result:
+            return str(result)
+    except Exception:
+        logger.exception("New shortener conversion failed")
+    try:
+        result = await shortener.get_quick_link(target)
+        return str(result) if result else None
+    except Exception:
+        logger.exception("New shortener quick-link fallback failed")
+        return None
+
+
+async def _new_shortener_send_step(client, message, user_id, group_id, delivery_key, mode, step):
+    """Issue a single date/user/group-bound attempt and send its short link."""
+    from database.new_shortener import begin_step, save_attempt
+    settings = await get_settings(int(group_id))
+    suffix = str(step)
+    domain = settings.get(f"new_shortener_step{suffix}_url")
+    api = settings.get(f"new_shortener_api{suffix}")
+    tutorial = settings.get(f"new_shortener_tutorial{suffix}")
+    if not domain or not api:
+        await message.reply_text(
+            f"⚠️ The group administrator has not configured New Shortener Step {step}. Please contact the group admin."
+        )
+        return False
+    token = await begin_step(user_id, group_id, step)
+    if not token:
+        await message.reply_text("This verification step is no longer valid. Please request the movie link again.")
+        return False
+    await save_attempt(token, user_id, group_id, step, delivery_key, mode)
+    bot_username = (getattr(temp, "U_NAME", "") or "").lstrip("@")
+    if not bot_username:
+        await message.reply_text("⚠️ The bot username is unavailable. Please try again later.")
+        return False
+    target = f"https://t.me/{bot_username}?start=ns_{token}"
+    short_url = await _new_shortener_make_url(domain, api, target)
+    if not short_url:
+        await message.reply_text("⚠️ Shortener service is temporarily unavailable. Please try again later.")
+        return False
+    buttons = [[InlineKeyboardButton(f"🔗 VERIFY STEP {step}/3", url=short_url)]]
+    if tutorial:
+        buttons.append([InlineKeyboardButton("📘 Tutorial", url=str(tutorial))])
+    await message.reply_text(
+        f"<b>🔐 New link verification — Step {step}/3</b>\nComplete this step to continue. Progress resets at midnight IST.",
+        reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML,
+    )
+    return True
+
+
+async def _new_shortener_return(client, message, token):
+    """Validate a shortener return, progress the ordered steps, then deliver."""
+    from database.new_shortener import consume_attempt, accept_step, get_attempt
+    attempt = await get_attempt(token)
+    if not attempt or int(attempt.get("user_id", 0)) != int(message.from_user.id):
+        await message.reply_text("⚠️ This verification link is invalid, expired, or belongs to another user.")
+        return True
+    user_id = int(attempt["user_id"])
+    group_id = int(attempt["group_id"])
+    step = int(attempt["step"])
+    settings = await get_settings(group_id)
+    if not settings.get("new_shortener_enabled", False):
+        await message.reply_text("New Shortener verification is disabled for this group. Request the movie link again.")
+        return True
+    claimed = await consume_attempt(token, user_id, group_id, step)
+    if not claimed or not await accept_step(user_id, group_id, step, token, enabled=True):
+        await message.reply_text("⚠️ This verification step has expired or was already used. Request the movie link again.")
+        return True
+    delivery_key = str(attempt.get("delivery_key") or "")
+    mode = str(attempt.get("mode") or "file")
+    if step < 3:
+        await _new_shortener_send_step(
+            client, message, user_id, group_id, delivery_key, mode, step + 1
+        )
+    else:
+        payload_prefix = "allfilesmode" if mode == "allfiles" else "filemode"
+        payload = f"{payload_prefix}_{group_id}_{delivery_key}"
+        await message.reply_text(
+            "✅ <b>Verification completed.</b> Tap below to receive your requested file.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 GET FILE", url=f"https://t.me/{temp.U_NAME}?start={payload}")]]),
+            parse_mode=enums.ParseMode.HTML,
+        )
+    return True
+
+
 @Client.on_message(filters.command("start") & filters.incoming)
 async def start(client: Client, message):
     await message.react(emoji=random.choice(REACTIONS))
     m = message
     user_id = m.from_user.id
+    # IMPORTANT: verification/shortlink deep-links are handled before the
+    # first-time language picker. A shortener return is also a /start link;
+    # blocking it here leaves the user stuck at /start. New verification
+    # returns use a short server-side token instead of embedding delivery state.
     if message.chat.type == enums.ChatType.PRIVATE and len(m.command) == 2 and m.command[1].startswith("settings_"):
         from plugins.advanced_settings import show_group_list, show_group_settings
         try:
@@ -97,15 +502,132 @@ async def start(client: Client, message):
         except (TypeError, ValueError):
             return await show_group_list(client, message)
         return await show_group_settings(client, message, grp_id)
-    if len(m.command) == 2 and m.command[1].startswith(("notcopy_", "jisshu_")):
-        _, userid, verify_id, file_id = m.command[1].split("_", 3)
-        user_id = int(userid)
-        grp_id = temp.CHAT.get(user_id, 0)
-        settings = await get_settings(grp_id)
-        verify_id_info = await db.get_verify_id_info(user_id, verify_id)
-        if not verify_id_info or verify_id_info["verified"]:
+    verification_return_mode = None
+    # Telegram normally exposes deep-link payloads through message.command, but
+    # some clients/redirect chains can leave the payload only in message.text.
+    # Normalize both forms so a shortener return can never fall through to the
+    # ordinary /start handler and appear to be stuck.
+    start_payload = ""
+    try:
+        if len(getattr(m, "command", []) or []) >= 2:
+            start_payload = str(m.command[1] or "").strip()
+        if not start_payload and getattr(m, "text", None):
+            parts = str(m.text).split(maxsplit=1)
+            if len(parts) == 2:
+                start_payload = parts[1].strip()
+    except Exception:
+        start_payload = ""
+
+    logger.info("/start received: user=%s payload=%s", user_id, start_payload[:80])
+    if start_payload.startswith("ns_"):
+        token = start_payload[3:].strip()
+        if not token:
+            await message.reply_text("⚠️ Invalid verification link. Please request the movie link again.")
+            return
+        await _new_shortener_return(client, message, token)
+        return
+    if start_payload.startswith("vr_"):
+        logger.info("Processing verification return token for user=%s", user_id)
+        # New verification-return links carry only a short opaque token.
+        # The original user/group/delivery data stays in MongoDB.
+        return_token = start_payload[3:].strip()
+        if not return_token:
+            await message.reply_text("<b>⚠️ ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ʟɪɴᴋ ɪs ɪɴᴠᴀʟɪᴅ. ᴘʟᴇᴀsᴇ ɢᴇɴᴇʀᴀᴛᴇ ᴀ ɴᴇᴡ ᴏɴᴇ.</b>", parse_mode=enums.ParseMode.HTML)
+            return
+        try:
+            verify_id_info = await db.get_verify_id_by_return_token(return_token)
+        except Exception:
+            logger.exception("Verification return token lookup failed: %s", return_token)
+            await message.reply_text("<b>⚠️ ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ sᴇʀᴠɪᴄᴇ ɪs ᴛᴇᴍᴘᴏʀᴀʀɪʟʏ ᴜɴᴀᴠᴀɪʟᴀʙʟᴇ. ᴘʟᴇᴀsᴇ ᴛʀʏ ᴛʜᴇ ʟɪɴᴋ ᴀɢᴀɪɴ.</b>", parse_mode=enums.ParseMode.HTML)
+            return
+        if not verify_id_info or verify_id_info.get("verified"):
+            grp_id = int((verify_id_info or {}).get("group_id") or 0)
+            if _is_owner_tracking_record(verify_id_info or {}):
+                try:
+                    log_chat = LOG_VR_CHANNEL
+                    await _shortener_log(
+                        client, log_chat, "SHORTENER_RETURN_REJECTED", message.from_user,
+                        int((verify_id_info or {}).get("step") or 1),
+                        Group=grp_id, VerifyToken=return_token,
+                        Reason="unknown_or_already_used",
+                        ActualUser=message.from_user.id,
+                    )
+                except Exception:
+                    logger.exception("Could not write rejected token return log")
             await message.reply("<b>ʟɪɴᴋ ᴇxᴘɪʀᴇᴅ ᴛʀʏ ᴀɢᴀɪɴ...</b>")
             return
+
+        user_id = int(verify_id_info["user_id"])
+        verify_id = str(verify_id_info.get("hash") or "")
+        logger.info("Verification token resolved: token=%s user=%s verify_id=%s group=%s", return_token, user_id, verify_id, verify_id_info.get("group_id"))
+        grp_id = int(verify_id_info.get("group_id") or 0)
+        file_id = str(verify_id_info.get("delivery_key") or "")
+        verification_return_mode = verify_id_info.get("mode", "file")
+        if verification_return_mode not in {"file", "allfiles"}:
+            verification_return_mode = "file"
+        if int(message.from_user.id) != user_id:
+            if _is_owner_tracking_record(verify_id_info):
+                try:
+                    log_chat = LOG_VR_CHANNEL
+                    await _shortener_log(
+                        client, log_chat, "SHORTENER_RETURN_REJECTED", message.from_user,
+                        int(verify_id_info.get("step") or 1),
+                        Group=grp_id, VerifyToken=return_token,
+                        Reason="token_user_mismatch", ActualUser=message.from_user.id,
+                        TokenUser=user_id,
+                    )
+                except Exception:
+                    logger.exception("Could not write token mismatch log")
+            await message.reply("<b>ʟɪɴᴋ ɪs ɴᴏᴛ ᴠᴀʟɪᴅ ғᴏʀ ʏᴏᴜʀ ᴜsᴇʀ.</b>")
+            return
+        # Settings are not required to accept the return token; avoiding this
+        # extra DB dependency makes the shortener return path more reliable.
+    elif start_payload.startswith(("notcopy_", "jisshu_")):
+        parts = start_payload.split("_", 4)
+        # Legacy verification links remain supported for backward compatibility.
+        # New links use the short server-side token above.
+        if len(parts) == 5:
+            _, userid, verify_id, grp_id, file_id = parts
+        else:
+            _, userid, verify_id, file_id = start_payload.split("_", 3)
+            grp_id = temp.CHAT.get(int(userid), 0)
+        user_id = int(userid)
+        grp_id = int(grp_id or 0)
+        verification_return_mode = "allfiles" if start_payload.startswith("jisshu") else "file"
+        settings = await get_settings(grp_id)
+        verify_id_info = await db.get_verify_id_info(user_id, verify_id)
+        if not verify_id_info or verify_id_info.get("verified"):
+            # A return that never reaches the normal acceptance path is still
+            # useful evidence when diagnosing a shortener that reports/cuts clicks.
+            if _is_owner_tracking_record(verify_id_info or {}):
+                try:
+                    log_chat = LOG_VR_CHANNEL
+                    await _shortener_log(
+                        client, log_chat, "SHORTENER_RETURN_REJECTED", message.from_user,
+                        int((verify_id_info or {}).get("step") or 1),
+                        Group=grp_id, VerifyID=verify_id,
+                        Reason="unknown_or_already_used",
+                        ActualUser=message.from_user.id, TokenUser=user_id,
+                    )
+                except Exception:
+                    logger.exception("Could not write rejected shortener return log")
+            await message.reply("<b>ʟɪɴᴋ ᴇxᴘɪʀᴇᴅ ᴛʀʏ ᴀɢᴀɪɴ...</b>")
+            return
+        if int(message.from_user.id) != int(user_id):
+            if _is_owner_tracking_record(verify_id_info):
+                try:
+                    log_chat = LOG_VR_CHANNEL
+                    await _shortener_log(
+                        client, log_chat, "SHORTENER_RETURN_REJECTED", message.from_user,
+                        int(verify_id_info.get("step") or 1),
+                        Group=grp_id, VerifyID=verify_id,
+                        Reason="token_user_mismatch", ActualUser=message.from_user.id, TokenUser=user_id,
+                    )
+                except Exception:
+                    logger.exception("Could not write token mismatch log")
+            await message.reply("<b>ʟɪɴᴋ ɪs ɴᴏᴛ ᴠᴀʟɪᴅ ғᴏʀ ʏᴏᴜʀ ᴜsᴇʀ.</b>")
+            return
+    if verification_return_mode:
         ist_timezone = pytz.timezone("Asia/Kolkata")
         if await db.user_verified(user_id):
             key = "third_time_verified"
@@ -117,20 +639,31 @@ async def start(client: Client, message):
             )
         current_time = dt.now(tz=ist_timezone)
         result = await db.update_notcopy_user(user_id, {key: current_time})
-        await db.update_verify_id_info(user_id, verify_id, {"verified": True})
         if key == "third_time_verified":
             num = 3
         else:
             num = 2 if key == "second_time_verified" else 1
-        if key == "third_time_verified":
-            msg = script.THIRDT_VERIFY_COMPLETE_TEXT
-        else:
-            msg = (
-                script.SECOND_VERIFY_COMPLETE_TEXT
-                if key == "second_time_verified"
-                else script.VERIFY_COMPLETE_TEXT
-            )
-        if message.command[1].startswith("jisshu"):
+        verification_update = {
+            "verified": True,
+            "verified_at": current_time,
+            "verification_step": num,
+            "return_accepted": True,
+        }
+        # Step 1 is the master recycle event. Record its rolling 24-hour
+        # expiry for diagnostics; Step 2/3 do not reset this timer.
+        if num == 1:
+            verification_update["master_24h_started_at"] = current_time
+            verification_update["master_24h_expires_at"] = current_time + timedelta(hours=24)
+        await db.update_verify_id_info(user_id, verify_id, verification_update)
+        logger.info("Verification return accepted: user=%s verify_id=%s step=%s", user_id, verify_id, num)
+        msg = verify_tr(
+            await get_user_language(user_id, message.from_user),
+            "done",
+            mention=message.from_user.mention,
+            num=num,
+            duration=get_readable_time(TWO_VERIFY_GAP),
+        )
+        if verification_return_mode == "allfiles":
             verifiedfiles = (
                 f"https://telegram.me/{temp.U_NAME}?start=allfiles_{grp_id}_{file_id}"
             )
@@ -138,27 +671,43 @@ async def start(client: Client, message):
             verifiedfiles = (
                 f"https://telegram.me/{temp.U_NAME}?start=file_{grp_id}_{file_id}"
             )
-        await client.send_message(
-            settings["log"],
-            script.VERIFIED_LOG_TEXT.format(
-                m.from_user.mention,
-                user_id,
-                dt.now(pytz.timezone("Asia/Kolkata")).strftime("%d %B %Y"),
-                num,
-            ),
-        )
+        if _is_owner_tracking_record(verify_id_info):
+            try:
+                date_text = current_time.strftime("%-d %B %Y time %-I:%M%p %A")
+                verification_log = "\n".join([
+                    "<b>🔐 ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ʀᴇᴛᴜʀɴ ᴀᴄᴄᴇᴘᴛᴇᴅ</b>",
+                    "",
+                    "#VerificationCompleted",
+                    f"👤 ᴜꜱᴇʀ: {m.from_user.mention} [ {user_id} ]",
+                    f"📆 ᴅᴀᴛᴇ: {date_text}",
+                    "Get File click: PENDING",
+                    f"📊 ꜱᴛᴀᴛᴜꜱ: #Verificaton_{num}_Completed",
+                ])
+                await client.send_message(LOG_VR_CHANNEL, verification_log)
+            except Exception:
+                logger.exception("Could not write verification return log")
+        ui_lang = await get_user_language(user_id, message.from_user)
         btn = [
             [
-                InlineKeyboardButton("‼️ ᴄʟɪᴄᴋ ʜᴇʀᴇ ᴛᴏ ɢᴇᴛ ꜰɪʟᴇ ‼️", url=verifiedfiles),
+                InlineKeyboardButton(tr(ui_lang, "send_all"), url=verifiedfiles),
             ]
         ]
         reply_markup = InlineKeyboardMarkup(btn)
         await m.reply_photo(
             photo=(VERIFY_IMG),
-            caption=msg.format(
-                message.from_user.mention, get_readable_time(TWO_VERIFY_GAP)
-            ),
+            caption=msg,
             reply_markup=reply_markup,
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    # Normal private /start still requires a language selection. The verification
+    # deep-link above is deliberately exempt so shortener returns always run.
+    if message.chat.type == enums.ChatType.PRIVATE and not await has_saved_language(user_id):
+        await db.update_user({"id": int(user_id), "name": message.from_user.first_name})
+        await message.reply_text(
+            tr("en", "language_title") + "\n\n" + tr("en", "language_body"),
+            reply_markup=language_markup(),
             parse_mode=enums.ParseMode.HTML,
         )
         return
@@ -194,77 +743,35 @@ async def start(client: Client, message):
                 temp.B_LINK, message.from_user.id, message.from_user.mention
             ),
         )
+    lang = await get_user_language(message.from_user.id, message.from_user)
     if len(message.command) != 2:
-        buttons = [
-            [
-                InlineKeyboardButton(
-                    "⇋ ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ ⇋",
-                    url=f"http://telegram.dog/{temp.U_NAME}?startgroup=start",
-                )
-            ],
-            [
-                InlineKeyboardButton("• ᴅɪꜱᴀʙʟᴇ ᴀᴅꜱ •", callback_data="jisshupremium"),
-                InlineKeyboardButton("• ꜱᴘᴇᴄɪᴀʟ •", callback_data="special"),
-            ],
-            [
-                InlineKeyboardButton("• ʜᴇʟᴘ •", callback_data="help"),
-                InlineKeyboardButton("• ᴀʙᴏᴜᴛ •", callback_data="about"),
-            ],
-            [
-                InlineKeyboardButton(
-                    "• ᴇᴀʀɴ ᴜɴʟɪᴍɪᴛᴇᴅ ᴍᴏɴᴇʏ ᴡɪᴛʜ ʙᴏᴛ •", callback_data="earn"
-                )
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(buttons)
+        lang = await get_user_language(message.from_user.id, message.from_user)
+        reply_markup = _global_home_markup(lang)
         m = await message.reply_sticker(
             "CAACAgUAAx0CZz_GMwACMBdnXZA4SejgJ6a_0TrNzOfn9ImI_QACNwsAArT4iFVaZPJf8ldVVh4E"
         )
         await asyncio.sleep(1)
         await m.delete()
-        await message.reply_photo(
+        home_message = await message.reply_photo(
             photo=random.choice(START_IMG),
-            caption=script.START_TXT.format(
-                message.from_user.mention, get_status(), message.from_user.id
-            ),
+            caption=core_tr(lang, "start", mention=message.from_user.mention, status=get_status()),
             reply_markup=reply_markup,
             parse_mode=enums.ParseMode.HTML,
         )
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        asyncio.create_task(_delete_home_later(client, message.from_user.id, home_message.id, HOME_AUTO_DELETE))
         return
     if len(message.command) == 2 and message.command[1] in [
-        "subscribe",
-        "error",
-        "okay",
-        "help",
+        "subscribe", "error", "okay", "help",
     ]:
-        buttons = [
-            [
-                InlineKeyboardButton(
-                    "⇋ ᴀᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ ⇋",
-                    url=f"http://telegram.dog/{temp.U_NAME}?startgroup=start",
-                )
-            ],
-            [
-                InlineKeyboardButton("• ᴅɪꜱᴀʙʟᴇ ᴀᴅꜱ •", callback_data="jisshupremium"),
-                InlineKeyboardButton("• ꜱᴘᴇᴄɪᴀʟ •", callback_data="special"),
-            ],
-            [
-                InlineKeyboardButton("• ʜᴇʟᴘ •", callback_data="help"),
-                InlineKeyboardButton("• ᴀʙᴏᴜᴛ •", callback_data="about"),
-            ],
-            [
-                InlineKeyboardButton(
-                    "• ᴇᴀʀɴ ᴜɴʟɪᴍɪᴛᴇᴅ ᴍᴏɴᴇʏ ᴡɪᴛʜ ʙᴏᴛ •", callback_data="earn"
-                )
-            ],
-        ]
-        reply_markup = InlineKeyboardMarkup(buttons)
+        lang = await get_user_language(message.from_user.id, message.from_user)
         return await message.reply_photo(
             photo=START_IMG,
-            caption=script.START_TXT.format(
-                message.from_user.mention, get_status(), message.from_user.id
-            ),
-            reply_markup=reply_markup,
+            caption=core_tr(lang, "start", mention=message.from_user.mention, status=get_status()),
+            reply_markup=_global_home_markup(lang),
             parse_mode=enums.ParseMode.HTML,
         )
     if len(message.command) == 2 and message.command[1].startswith("reff_"):
@@ -341,6 +848,12 @@ async def start(client: Client, message):
     except:
         pre, grp_id, file_id = "", 0, data
 
+    # A verified Telegram deep-link is the final Get File/Send All click.
+    # Track it separately from shortener completion so redirect/click problems
+    # can be diagnosed from the log channel.
+    if pre in ("file", "allfiles"):
+        await _mark_get_file_click(client, m.from_user, int(grp_id), str(file_id))
+
     # filemode/allfilesmode are reached only after the user has completed the
     # File Mode shortlink. They must bypass the verification gate and then be
     # sent as normal files with the group's original caption/buttons.
@@ -354,17 +867,22 @@ async def start(client: Client, message):
     # Premium is the first access decision. Do not require group settings,
     # force-subscription, or verification before checking the real Premium
     # record used by /add_premium.
-    settings = await get_settings(int(grp_id)) if int(grp_id) else {}
+    # grp_id=0 represents a direct PM. Use the global/default settings for PM
+    # while keeping the origin explicitly as 0 for accurate tracking.
+    settings = await get_settings(int(grp_id))
     if not premium_active:
         # Preserve the legacy fsub_id field while allowing the settings UI to manage
         # multiple force-subscribe channels independently for each group.
-        fsub_channels = settings.get("fsub_channels") or [settings.get("fsub_id", AUTH_CHANNEL)]
+        # Group-specific channels are enforced only when explicitly enabled.
+        # Legacy global AUTH_CHANNEL/AUTH_REQ_CHANNEL remains separately enforced
+        # below, preserving existing deployments without leaking one group's list.
+        fsub_channels = settings.get("fsub_channels", []) if settings.get("fsub_enabled", False) else []
         try:
-            fsub_channels = [int(c) for c in fsub_channels]
+            fsub_channels = [int(c) for c in fsub_channels if str(c).strip()]
         except (TypeError, ValueError):
-            fsub_channels = [int(AUTH_CHANNEL)]
+            fsub_channels = []
 
-        if AUTH_REQ_CHANNEL and int(AUTH_REQ_CHANNEL) in fsub_channels:
+        if AUTH_REQ_CHANNEL and int(AUTH_REQ_CHANNEL) in fsub_channels and len(fsub_channels) == 1:
             if not await is_req_subscribed(client, message):
                 try:
                     invite_link = await client.create_chat_invite_link(
@@ -373,16 +891,19 @@ async def start(client: Client, message):
                 except ChatAdminRequired:
                     logger.error("Make sure Bot is admin in Forcesub channel")
                     return
-                btn = [[InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link.invite_link)]]
+                label = (settings.get("fsub_button_labels") or {}).get(str(int(AUTH_REQ_CHANNEL)), "⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️")
+                btn = [[InlineKeyboardButton(str(label)[:64], url=invite_link.invite_link)]]
                 if message.command[1] != "subscribe":
                     btn.append([[InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}")]][0])
+                fsub_caption = await _build_fsub_caption(client, settings, [AUTH_REQ_CHANNEL])
                 await client.send_photo(
-                    chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=script.FORCESUB_TEXT,
-                    reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML,
+                    chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=fsub_caption,
+                    reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML,
                 )
                 return
         else:
             btn = []
+            required_channel_ids = []
             missing_custom = False
             for channel in fsub_channels:
                 if channel == int(AUTH_CHANNEL):
@@ -393,26 +914,31 @@ async def start(client: Client, message):
                     subscribed = False
                 if not subscribed:
                     missing_custom = True
+                    required_channel_ids.append(channel)
                     try:
                         invite = await client.create_chat_invite_link(channel)
-                        btn.append([InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite.invite_link)])
+                        label = (settings.get("fsub_button_labels") or {}).get(str(channel), "⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️")
+                        btn.append([InlineKeyboardButton(str(label)[:64], url=invite.invite_link)])
                     except Exception:
                         pass
 
             default_missing = not await is_req_subscribed(client, message)
             if default_missing:
+                required_channel_ids.append(int(AUTH_CHANNEL))
                 try:
                     invite_link_default = await client.create_chat_invite_link(int(AUTH_CHANNEL), creates_join_request=True)
-                    btn.append([InlineKeyboardButton("⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️", url=invite_link_default.invite_link)])
+                    label = (settings.get("fsub_button_labels") or {}).get(str(int(AUTH_CHANNEL)), "⛔️ ᴊᴏɪɴ ɴᴏᴡ ⛔️")
+                    btn.append([InlineKeyboardButton(str(label)[:64], url=invite_link_default.invite_link)])
                 except Exception:
                     pass
 
             if message.command[1] != "subscribe" and (missing_custom or default_missing):
                 btn.append([InlineKeyboardButton("♻️ ᴛʀʏ ᴀɢᴀɪɴ ♻️", url=f"https://t.me/{temp.U_NAME}?start={message.command[1]}")])
             if btn:
+                fsub_caption = await _build_fsub_caption(client, settings, required_channel_ids)
                 await client.send_photo(
-                    chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=script.FORCESUB_TEXT,
-                    reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML,
+                    chat_id=message.from_user.id, photo=FORCESUB_IMG, caption=fsub_caption,
+                    reply_markup=InlineKeyboardMarkup(btn), parse_mode=enums.ParseMode.HTML,
                 )
                 return
 
@@ -423,6 +949,25 @@ async def start(client: Client, message):
         settings = await get_settings(grp_id)
         print(f"Id Settings - {settings}")
         verification_enabled = bool(settings.get("is_verify", IS_VERIFY))
+
+        # Independent three-step shortener. It is intentionally evaluated before
+        # the legacy shortener and uses separate per-group settings/state.
+        if settings.get("new_shortener_enabled", False) and not file_mode_completed:
+            from database.new_shortener import get_state
+            new_state = await get_state(user_id, grp_id)
+            if not new_state.get("completed", False):
+                next_step = int(new_state.get("completed_step", 0)) + 1
+                if next_step in (1, 2, 3):
+                    await _new_shortener_send_step(
+                        client, message, user_id, grp_id, str(file_id),
+                        "allfiles" if pre == "allfiles" else "file", next_step
+                    )
+                    return
+
+        # The verification gate only runs when a real shortener is configured.
+        # Deleting/disabling the shortener must restore the original direct-file
+        # path for non-premium users; Premium already bypasses this block above.
+        primary_shortener_available = bool(settings.get("shortner") and settings.get("api"))
 
         # File Mode VERIFY and SHORTLINK use the SAME verification state.
         # The selected file mode must never reset the user's 1/3 -> 2/3 -> 3/3
@@ -438,26 +983,90 @@ async def start(client: Client, message):
         # master Verification switch is OFF.
         is_second_shortener = (
             await db.use_second_shortener(user_id, settings.get("verify_time", TWO_VERIFY_GAP))
-            if verification_enabled else False
+            if verification_enabled and primary_shortener_available else False
         )
         is_third_shortener = (
             await db.use_third_shortener(user_id, settings.get("third_verify_time", THREE_VERIFY_GAP))
-            if verification_enabled else False
+            if verification_enabled and primary_shortener_available else False
         )
 
-        if (not file_mode_completed) and verification_enabled and ((not user_verified) or is_second_shortener or is_third_shortener):
+        # If the selected secondary/third shortener was removed, don't send a
+        # broken shortlink. Fall back to the configured primary shortener.
+        if is_second_shortener and not (settings.get("shortner_two") and settings.get("api_two")):
+            is_second_shortener = False
+        if is_third_shortener and not (settings.get("shortner_three") and settings.get("api_three")):
+            is_third_shortener = False
+
+        if (not file_mode_completed) and verification_enabled and primary_shortener_available and ((not user_verified) or is_second_shortener or is_third_shortener):
             verify_id = "".join(random.choices(string.ascii_uppercase + string.digits, k=7))
-            await db.create_verify_id(user_id, verify_id)
-            temp.CHAT[user_id] = grp_id
-            if message.command[1].startswith("allfiles"):
-                verify = await get_shortlink(
-                    f"https://telegram.me/{temp.U_NAME}?start=jisshu_{user_id}_{verify_id}_{file_id}",
-                    grp_id, is_second_shortener, is_third_shortener,
-                )
+            step = 3 if is_third_shortener else (2 if is_second_shortener else 1)
+            if is_third_shortener:
+                shortener_domain = settings.get("shortner_three")
+            elif is_second_shortener:
+                shortener_domain = settings.get("shortner_two")
             else:
-                verify = await get_shortlink(
-                    f"https://telegram.me/{temp.U_NAME}?start=notcopy_{user_id}_{verify_id}_{file_id}",
-                    grp_id, is_second_shortener, is_third_shortener,
+                shortener_domain = settings.get("shortner")
+            shortener_api = (settings.get("api_three") if is_third_shortener
+                             else settings.get("api_two") if is_second_shortener
+                             else settings.get("api"))
+            owner_shortener = await _is_owner_shortener(shortener_domain, shortener_api)
+            delivery_mode = "allfiles" if message.command[1].startswith("allfiles") else "file"
+            # Telegram limits bot deep-link start parameters to 64 bytes. The
+            # previous return URL embedded user_id + verify_id + group_id +
+            # file_id and could exceed that limit before Telegram invoked /start.
+            # Keep that state server-side and expose only a short opaque token.
+            return_token = "".join(
+                random.choices(string.ascii_letters + string.digits, k=16)
+            )
+            await db.create_verify_id(
+                user_id, verify_id, created_at=_ist_now(), group_id=int(grp_id),
+                delivery_key=str(file_id), mode=delivery_mode, step=step,
+                shortener_domain=shortener_domain or "unknown",
+                shortener_api=shortener_api or "",
+                owner_shortener=owner_shortener,
+                owner_id=(int(OWNER_ID) if owner_shortener else None),
+                return_token=return_token,
+            )
+            temp.CHAT[user_id] = grp_id
+            telegram_return_link = f"https://telegram.me/{temp.U_NAME}?start=vr_{return_token}"
+            tracking_base = str(URL or "").strip().rstrip("/")
+            if tracking_base and not tracking_base.startswith(("http://", "https://")):
+                tracking_base = "https://" + tracking_base
+            target_link = (
+                f"{tracking_base}/verify-click/{return_token}"
+                if tracking_base
+                else telegram_return_link
+            )
+            try:
+                verify = await get_shortlink(target_link, grp_id, is_second_shortener, is_third_shortener)
+            except Exception as exc:
+                verify = None
+                if owner_shortener:
+                    await _shortener_log(
+                        client, (LINK_TRACK_CHANNEL or LOG_VR_CHANNEL), "SHORTENER_API_ERROR", message.from_user, step,
+                        Group=grp_id, Mode=delivery_mode, Domain=shortener_domain or "unknown",
+                        VerifyID=verify_id, Error=str(exc)[:300],
+                    )
+            if not verify:
+                if owner_shortener:
+                    await _shortener_log(
+                        client, (LINK_TRACK_CHANNEL or LOG_VR_CHANNEL), "SHORTENER_API_ERROR", message.from_user, step,
+                        Group=grp_id, Mode=delivery_mode, Domain=shortener_domain or "unknown",
+                        VerifyID=verify_id, Error="shortener returned no URL",
+                    )
+                # Do not create a message with a dead/None URL when the
+                # shortener API is down. The user gets a clear retry instead
+                # of the handler silently failing.
+                await m.reply_text(
+                    "<b>⚠️ ᴛʜᴇ sʜᴏʀᴛʟɪɴᴋ sᴇʀᴠɪᴄᴇ ɪs ᴛᴇᴍᴘᴏʀᴀʀɪʟʏ ᴜɴᴀᴠᴀɪʟᴀʙʟᴇ. ᴘʟᴇᴀsᴇ ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ.</b>"
+                )
+                return
+            await db.update_verify_id_info(user_id, verify_id, {"shortlink": verify, "shortlink_created_at": _ist_now()})
+            if owner_shortener:
+                await _shortener_log(
+                    client, (LINK_TRACK_CHANNEL or LOG_VR_CHANNEL), "SHORTLINK_CREATED", message.from_user, step,
+                    Group=grp_id, Mode=delivery_mode, Domain=shortener_domain or "unknown",
+                    **{"Api key": shortener_api or ""}, VerifyID=verify_id, ShortURL=str(verify)[:700],
                 )
             if is_third_shortener:
                 howtodownload = settings.get("tutorial_3", TUTORIAL_3)
@@ -467,26 +1076,81 @@ async def start(client: Client, message):
                 settings.get("file_mode", False)
                 and settings.get("file_mode_type", "verify") == "shortlink"
             )
-            verify_button_text = "🔗 ɢᴇᴛ ꜱʜᴏʀᴛʟɪɴᴋ 🔗" if shortlink_mode else "✅ ᴠᴇʀɪꜰʏ ✅"
-            how_button_text = "ʜᴏᴡ ᴛᴏ ᴅᴏᴡɴʟᴏᴀᴅ ❓" if shortlink_mode else "ʜᴏᴡ ᴛᴏ ᴠᴇʀɪꜰʏ❓"
+            ui_lang = await get_user_language(user_id, message.from_user)
+            verify_labels = {
+                "en": ("SHORTLINK" if shortlink_mode else "VERIFY"),
+                "hi": ("शॉर्टलिंक" if shortlink_mode else "सत्यापित"),
+                "ta": ("SHORTLINK" if shortlink_mode else "சரிபார்"),
+                "te": ("SHORTLINK" if shortlink_mode else "వెరిఫై"),
+                "kn": ("SHORTLINK" if shortlink_mode else "ಪರಿಶೀಲಿಸಿ"),
+                "ml": ("SHORTLINK" if shortlink_mode else "പരിശോധിക്കുക"),
+                "bn": ("SHORTLINK" if shortlink_mode else "ভেরিফাই"),
+                "mr": ("SHORTLINK" if shortlink_mode else "पडताळा"),
+                "gu": ("SHORTLINK" if shortlink_mode else "ચકાસો"),
+                "pa": ("SHORTLINK" if shortlink_mode else "ਵੇਰੀਫਾਈ"),
+                "ur": ("SHORTLINK" if shortlink_mode else "تصدیق"),
+                "as": ("SHORTLINK" if shortlink_mode else "ভেৰিফাই"),
+                "ne": ("SHORTLINK" if shortlink_mode else "VERIFY"),
+                "hinglish": ("SHORTLINK" if shortlink_mode else "VERIFY"),
+            }
+            how_labels = {
+                "en": "ʟᴇᴀʀɴ ʜᴏᴡ" if shortlink_mode else "ᴠᴇʀɪғʏ ɢᴜɪᴅᴇ",
+                "hi": "कैसे करें" if shortlink_mode else "वेरीफाई गाइड",
+                "ta": "எப்படி" if shortlink_mode else "சரிபார்ப்பு வழி",
+                "te": "ఎలా" if shortlink_mode else "వెరిఫై గైడ్",
+                "kn": "ಹೇಗೆ" if shortlink_mode else "ಪರಿಶೀಲನೆ ಮಾರ್ಗದರ್ಶಿ",
+                "ml": "എങ്ങനെ" if shortlink_mode else "പരിശോധന ഗൈഡ്",
+                "bn": "কীভাবে" if shortlink_mode else "ভেরিফাই গাইড",
+                "mr": "कसे?" if shortlink_mode else "व्हेरिफाय गाइड",
+                "gu": "કેવી રીતે" if shortlink_mode else "વેરિફાય ગાઇડ",
+                "pa": "ਕਿਵੇਂ?" if shortlink_mode else "ਵੇਰੀਫਾਈ ਗਾਈਡ",
+                "ur": "کیسے؟" if shortlink_mode else "تصدیق گائیڈ",
+                "as": "কেনেকৈ" if shortlink_mode else "ভেৰিফাই গাইড",
+                "ne": "कसरी?" if shortlink_mode else "VERIFY गाइड",
+                "hinglish": "KAISE?" if shortlink_mode else "VERIFY GUIDE",
+            }
+            premium_labels = {
+                "en": "ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ",
+                "hi": "Premium खरीदें",
+                "ta": "Premium வாங்க",
+                "te": "Premium కొనండి",
+                "kn": "Premium ಖರೀದಿಸಿ",
+                "ml": "Premium വാങ്ങുക",
+                "bn": "Premium কিনুন",
+                "mr": "Premium घ्या",
+                "gu": "Premium ખરીદો",
+                "pa": "Premium ਲਵੋ",
+                "ur": "Premium خریدیں",
+                "as": "Premium ক্ৰয় কৰক",
+                "ne": "Premium किन्नुहोस्",
+                "hinglish": "PREMIUM LO",
+            }
+            # Compact visible labels only. URLs, callbacks, shortener
+            # generation, verification state and payment logic are untouched.
+            verify_button_text = small_caps(
+                f"🔗 {verify_labels.get(ui_lang, verify_labels['en'])} 🔗"
+                if shortlink_mode
+                else f"✅ {verify_labels.get(ui_lang, verify_labels['en'])} ✅"
+            )
+            how_button_text = small_caps(how_labels.get(ui_lang, how_labels["en"]))
             buttons = [
                 [InlineKeyboardButton(text=verify_button_text, url=verify), InlineKeyboardButton(text=how_button_text, url=howtodownload)],
-                [InlineKeyboardButton(text="😁 ʙᴜʏ sᴜʙsᴄʀɪᴘᴛɪᴏɴ - ɴᴏ ɴᴇᴇᴅ ᴛᴏ ᴠᴇʀɪғʏ 😁", callback_data="getpremium")],
+                [InlineKeyboardButton(text=small_caps(premium_labels.get(ui_lang, premium_labels["en"])), callback_data="getpremium")],
             ]
             reply_markup = InlineKeyboardMarkup(buttons)
             if shortlink_mode:
-                if await db.user_verified(user_id):
-                    msg = script.SHORTLINK_THIRD_VERIFICATION_TEXT
-                else:
-                    msg = (
-                        script.SHORTLINK_SECOND_VERIFICATION_TEXT
-                        if is_second_shortener
-                        else script.SHORTLINK_VERIFICATION_TEXT
-                    )
-            elif await db.user_verified(user_id):
-                msg = script.THIRDT_VERIFICATION_TEXT
+                verify_key = "short3" if await db.user_verified(user_id) else ("short2" if is_second_shortener else "short1")
             else:
-                msg = script.SECOND_VERIFICATION_TEXT if is_second_shortener else script.VERIFICATION_TEXT
+                verify_key = "verify3" if await db.user_verified(user_id) else ("verify2" if is_second_shortener else "verify1")
+            msg = verify_tr(
+                ui_lang,
+                verify_key,
+                mention=message.from_user.mention,
+                status=get_status(),
+                greeting=_file_mode_greeting(),
+                name=formate_file_name((await get_file_details(file_id) or [None])[0].file_name) if (await get_file_details(file_id) or [None])[0] else "File",
+                size=get_size((await get_file_details(file_id) or [None])[0].file_size) if (await get_file_details(file_id) or [None])[0] else "N/A",
+            )
             if shortlink_mode:
                 # Shortlink mode shows the same dynamic movie/file information
                 # as the File Mode caption, while keeping the Shortlink 1/3 →
@@ -581,7 +1245,7 @@ async def start(client: Client, message):
             ),
         )
         replyed = await message.reply(delCap)
-        await asyncio.sleep(FILE_AUTO_DEL_TIMER)
+        await asyncio.sleep(delete_delay)
         for file in files_to_delete:
             try:
                 await file.delete()
@@ -1082,7 +1746,7 @@ async def set_shortner(c, m):
         )
         link = (await c.get_chat(m.chat.id)).invite_link
         grp_link = f"[{m.chat.title}]({link})"
-        log_message = f"#New_Shortner_Set_For_1st_Verify\n\nName - {user_info}\nId - `{user_id}`\n\nDomain name - {URL}\nApi - `{API}`\nGroup link - {grp_link}"
+        log_message = f"#New_Shortner_Set_For_1st_Verify\n\nName - {user_info}\nId - `{user_id}`\n\nDomain name - {URL}\nApi - `<masked>`\nGroup link - {grp_link}"
         await c.send_message(
             LOG_API_CHANNEL, log_message, disable_web_page_preview=True
         )
@@ -1133,7 +1797,7 @@ async def set_shortner_2(c, m):
         )
         link = (await c.get_chat(m.chat.id)).invite_link
         grp_link = f"[{m.chat.title}]({link})"
-        log_message = f"#New_Shortner_Set_For_2nd_Verify\n\nName - {user_info}\nId - `{user_id}`\n\nDomain name - {URL}\nApi - `{API}`\nGroup link - {grp_link}"
+        log_message = f"#New_Shortner_Set_For_2nd_Verify\n\nName - {user_info}\nId - `{user_id}`\n\nDomain name - {URL}\nApi - `<masked>`\nGroup link - {grp_link}"
         await c.send_message(
             LOG_API_CHANNEL, log_message, disable_web_page_preview=True
         )
@@ -1193,7 +1857,7 @@ async def set_shortner_3(c, m):
             user_info = f"{m.from_user.mention}"
         link = (await c.get_chat(m.chat.id)).invite_link
         grp_link = f"[{m.chat.title}]({link})"
-        log_message = f"#New_Shortner_Set_For_3rd_Verify\n\nName - {user_info}\nId - `{user_id}`\n\nDomain name - {URL}\nApi - `{API}`\nGroup link - {grp_link}"
+        log_message = f"#New_Shortner_Set_For_3rd_Verify\n\nName - {user_info}\nId - `{user_id}`\n\nDomain name - {URL}\nApi - `<masked>`\nGroup link - {grp_link}"
         await c.send_message(
             LOG_API_CHANNEL, log_message, disable_web_page_preview=True
         )
@@ -1244,9 +1908,9 @@ async def set_log(client, message):
         f"<b>✅ sᴜᴄᴄᴇssꜰᴜʟʟʏ sᴇᴛ ʏᴏᴜʀ ʟᴏɢ ᴄʜᴀɴɴᴇʟ ꜰᴏʀ {title}\n\nɪᴅ `{log}`</b>",
         disable_web_page_preview=True,
     )
-    user_id = m.from_user.id
+    user_id = message.from_user.id
     user_info = (
-        f"@{m.from_user.username}" if m.from_user.username else f"{m.from_user.mention}"
+        f"@{message.from_user.username}" if message.from_user.username else f"{message.from_user.mention}"
     )
     link = (await client.get_chat(message.chat.id)).invite_link
     grp_link = f"[{message.chat.title}]({link})"
@@ -1590,3 +2254,45 @@ async def reset_group_command(client, message):
     reply_markup = InlineKeyboardMarkup(btn)
     await save_default_settings(grp_id)
     await message.reply_text("ꜱᴜᴄᴄᴇꜱꜱғᴜʟʟʏ ʀᴇꜱᴇᴛ ɢʀᴏᴜᴘ ꜱᴇᴛᴛɪɴɢꜱ...")
+
+
+@Client.on_chat_member_updated()
+async def track_private_block_unblock(client, update):
+    """Track users blocking/unblocking the bot in LOG_VR_CHANNEL."""
+    try:
+        chat = update.chat
+        old_member = update.old_chat_member
+        new_member = update.new_chat_member
+        if not chat or chat.type != enums.ChatType.PRIVATE:
+            return
+        # In a private chat, the bot's membership changes when the user blocks
+        # or unblocks it. LEFT/BANNED are treated as blocked; MEMBER as unblocked.
+        old_status = getattr(old_member, "status", None)
+        new_status = getattr(new_member, "status", None)
+        blocked_statuses = {
+            enums.ChatMemberStatus.LEFT,
+            enums.ChatMemberStatus.BANNED,
+        }
+        if new_status in blocked_statuses and old_status not in blocked_statuses:
+            event = "🚫 USER BLOCKED BOT"
+        elif new_status == enums.ChatMemberStatus.MEMBER and old_status in blocked_statuses:
+            event = "✅ USER UNBLOCKED BOT"
+        else:
+            return
+
+        user = getattr(new_member, "user", None) or getattr(old_member, "user", None)
+        if not user:
+            return
+        now = _ist_now()
+        await client.send_message(
+            LOG_VR_CHANNEL,
+            "\n".join([
+                f"<b>{event}</b>",
+                f"👤 User: {user.mention} [ <code>{user.id}</code> ]",
+                f"🔗 Username: @{user.username}" if user.username else "🔗 Username: —",
+                f"📆 Time: {now.strftime('%-d %B %Y %I:%M%p %A')}",
+            ]),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.exception("Could not track private block/unblock event")
