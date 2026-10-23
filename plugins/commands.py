@@ -2,6 +2,7 @@ import os
 import html
 import requests
 import logging
+from functools import wraps
 import random
 import asyncio
 import string
@@ -48,6 +49,35 @@ from language import (
     language_markup, has_saved_language, get_user_language, tr,
     core_tr, home_tr, verify_tr, small_caps,
 )
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+
+def _debug_handler(func):
+    """Log entry, completion and full traceback for commands/callbacks."""
+    @wraps(func)
+    async def _wrapped(client, event, *args, **kwargs):
+        is_callback = hasattr(event, "data") and hasattr(event, "answer")
+        user = getattr(getattr(event, "from_user", None), "id", None)
+        chat = getattr(getattr(event, "chat", None), "id", None)
+        if chat is None:
+            chat = getattr(getattr(getattr(event, "message", None), "chat", None), "id", None)
+        payload = getattr(event, "data", None) if is_callback else getattr(event, "text", None)
+        logger.info("HANDLER_ENTER module=%s handler=%s kind=%s user=%s chat=%s payload=%r", __name__, func.__name__, "callback" if is_callback else "message", user, chat, payload)
+        try:
+            result = await func(client, event, *args, **kwargs)
+            logger.info("HANDLER_OK module=%s handler=%s user=%s", __name__, func.__name__, user)
+            return result
+        except Exception as exc:
+            logger.exception("HANDLER_FAILED module=%s handler=%s kind=%s user=%s chat=%s payload=%r error_type=%s error=%s", __name__, func.__name__, "callback" if is_callback else "message", user, chat, payload, type(exc).__name__, exc)
+            if is_callback:
+                try:
+                    await event.answer("This button failed. The error was logged; please try again later.", show_alert=True)
+                except Exception:
+                    logger.exception("Could not show failure alert for handler=%s user=%s", func.__name__, user)
+            raise
+    return _wrapped
 
 
 async def _build_fsub_caption(client, settings, channel_ids):
@@ -274,18 +304,22 @@ def _file_mode_markup(settings, file_id):
 
 
 @Client.on_callback_query(filters.regex(r"^global_lang:"))
+@_debug_handler
 async def global_language_callback(client: Client, query):
     value = query.data.split(":", 1)[1]
+    logger.info("GLOBAL_LANG callback received: user=%s data=%r chat=%s message=%s", getattr(query.from_user, "id", None), query.data, getattr(getattr(query, "message", None), "chat", None) and query.message.chat.id, getattr(getattr(query, "message", None), "id", None))
     if value == "menu":
         lang = await get_user_language(query.from_user.id, query.from_user)
         await query.answer()
         text = tr(lang, "language_title") + "\n\n" + tr(lang, "language_body")
+        logger.info("GLOBAL_LANG showing picker: user=%s", query.from_user.id)
         return await _edit_language_message(query, text, language_markup())
     from language import LANGUAGES
     if value not in LANGUAGES:
         return await query.answer("Language unavailable.", show_alert=True)
     # Persist the language before changing the message. If MongoDB is down,
     # keep the picker visible and tell the user instead of pretending it saved.
+    logger.info("GLOBAL_LANG saving selection: user=%s language=%s", query.from_user.id, value)
     try:
         await db.update_user({
             "id": int(query.from_user.id),
@@ -305,6 +339,7 @@ async def global_language_callback(client: Client, query):
         await query.answer(tr(value, "language_saved"), show_alert=True)
     except Exception:
         pass
+    logger.info("GLOBAL_LANG saved successfully: user=%s language=%s; refreshing home UI", query.from_user.id, value)
     # Rebuild the normal home menu immediately after the language is persisted.
     markup = _global_home_markup(value)
     try:
@@ -321,7 +356,9 @@ async def global_language_callback(client: Client, query):
     except Exception as exc:
         from pyrogram.errors import MessageNotModified
         if not isinstance(exc, MessageNotModified):
-            logger.exception("Could not refresh home UI after global language change")
+            logger.exception("GLOBAL_LANG failed refreshing home UI: user=%s language=%s", query.from_user.id, value)
+    else:
+        logger.warning("GLOBAL_LANG selection saved but query.message is missing: user=%s", query.from_user.id)
 
 
 async def _edit_language_message(query, text, markup):
@@ -345,6 +382,7 @@ async def _delete_home_later(client, user_id, message_id, delay):
 
 
 @Client.on_callback_query(filters.regex(r"^clean_home$"), group=-1)
+@_debug_handler
 async def clean_home_callback(client, query):
     try:
         await query.message.delete()
@@ -507,7 +545,9 @@ async def _new_shortener_return(client, message, token):
 
 
 @Client.on_message(filters.command("start") & filters.incoming)
+@_debug_handler
 async def start(client: Client, message):
+    logger.info("START_HANDLER entered: chat_id=%s chat_type=%s message_id=%s from_user_id=%s text=%r", getattr(getattr(message, "chat", None), "id", None), getattr(getattr(message, "chat", None), "type", None), getattr(message, "id", None), getattr(getattr(message, "from_user", None), "id", None), (getattr(message, "text", None) or "")[:120])
     # Reactions are cosmetic only. Some chats/bot API versions reject them;
     # never let a failed reaction abort /start, file delivery, or verification.
     try:
@@ -543,7 +583,7 @@ async def start(client: Client, message):
     except Exception:
         start_payload = ""
 
-    logger.info("/start received: user=%s payload=%s", user_id, start_payload[:80])
+    logger.info("START_HANDLER parsed: user=%s payload=%s", user_id, start_payload[:80])
     if start_payload.startswith("ns_"):
         token = start_payload[3:].strip()
         if not token:
@@ -729,6 +769,7 @@ async def start(client: Client, message):
     # Normal private /start still requires a language selection. The verification
     # deep-link above is deliberately exempt so shortener returns always run.
     if message.chat.type == enums.ChatType.PRIVATE and not await has_saved_language(user_id):
+        logger.info("START_HANDLER showing first-time language picker: user=%s", user_id)
         try:
             await db.update_user({"id": int(user_id), "name": message.from_user.first_name})
         except Exception:
@@ -738,6 +779,7 @@ async def start(client: Client, message):
             reply_markup=language_markup(),
             parse_mode=enums.ParseMode.HTML,
         )
+        logger.info("START_HANDLER language picker sent successfully: user=%s", user_id)
         return
     if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
         status = get_status()
@@ -771,7 +813,9 @@ async def start(client: Client, message):
                 temp.B_LINK, message.from_user.id, message.from_user.mention
             ),
         )
+    logger.info("START_HANDLER user record ready: user=%s", user_id)
     lang = await get_user_language(message.from_user.id, message.from_user)
+    logger.info("START_HANDLER resolved language: user=%s language=%s command=%r", user_id, lang, getattr(message, "command", None))
     if len(message.command) != 2:
         lang = await get_user_language(message.from_user.id, message.from_user)
         reply_markup = _global_home_markup(lang)
@@ -780,6 +824,7 @@ async def start(client: Client, message):
         )
         await asyncio.sleep(1)
         await m.delete()
+        logger.info("START_HANDLER sending home photo: user=%s language=%s", user_id, lang)
         home_message = await message.reply_photo(
             photo=random.choice(START_IMG),
             caption=core_tr(lang, "start", mention=message.from_user.mention, status=get_status()),
@@ -791,6 +836,7 @@ async def start(client: Client, message):
         except Exception:
             pass
         asyncio.create_task(_delete_home_later(client, message.from_user.id, home_message.id, HOME_AUTO_DELETE))
+        logger.info("START_HANDLER completed successfully: user=%s home_message_id=%s", user_id, home_message.id)
         return
     if len(message.command) == 2 and message.command[1] in [
         "subscribe", "error", "okay", "help",
@@ -2047,6 +2093,7 @@ async def set_time_3(client, message):
 
 
 @Client.on_callback_query(filters.regex("mostsearch"))
+@_debug_handler
 async def most(client, callback_query):
     def is_alphanumeric(string):
         return bool(re.match("^[a-zA-Z0-9 ]*$", string))
@@ -2083,6 +2130,7 @@ async def most(client, callback_query):
 
 
 @Client.on_callback_query(filters.regex(r"^trending$"))
+@_debug_handler
 async def top(client, query):
     movie_series_names = await movie_series_db.get_movie_series_names(1)
     if not movie_series_names:

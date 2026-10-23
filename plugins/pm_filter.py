@@ -99,10 +99,38 @@ from database.jsreferdb import referdb
 from language import get_user_language, has_saved_language, tr, core_tr
 from database.config_db import mdb
 import logging
+from functools import wraps
 from urllib.parse import quote_plus
 from Jisshu.util.file_properties import get_name, get_hash
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+
+def _debug_handler(func):
+    """Log entry, completion and full traceback for commands/callbacks."""
+    @wraps(func)
+    async def _wrapped(client, event, *args, **kwargs):
+        is_callback = hasattr(event, "data") and hasattr(event, "answer")
+        user = getattr(getattr(event, "from_user", None), "id", None)
+        chat = getattr(getattr(event, "chat", None), "id", None)
+        if chat is None:
+            chat = getattr(getattr(getattr(event, "message", None), "chat", None), "id", None)
+        payload = getattr(event, "data", None) if is_callback else getattr(event, "text", None)
+        logger.info("HANDLER_ENTER module=%s handler=%s kind=%s user=%s chat=%s payload=%r", __name__, func.__name__, "callback" if is_callback else "message", user, chat, payload)
+        try:
+            result = await func(client, event, *args, **kwargs)
+            logger.info("HANDLER_OK module=%s handler=%s user=%s", __name__, func.__name__, user)
+            return result
+        except Exception as exc:
+            logger.exception("HANDLER_FAILED module=%s handler=%s kind=%s user=%s chat=%s payload=%r error_type=%s error=%s", __name__, func.__name__, "callback" if is_callback else "message", user, chat, payload, type(exc).__name__, exc)
+            if is_callback:
+                try:
+                    await event.answer("This button failed. The error was logged; please try again later.", show_alert=True)
+                except Exception:
+                    logger.exception("Could not show failure alert for handler=%s user=%s", func.__name__, user)
+            raise
+    return _wrapped
 logger.setLevel(logging.ERROR)
 
 
@@ -273,6 +301,7 @@ async def group_search(client, message):
 
 
 @Client.on_callback_query(filters.regex(r"^reffff"))
+@_debug_handler
 async def refercall(bot, query):
     btn = [
         [
@@ -299,6 +328,7 @@ async def refercall(bot, query):
 
 
 @Client.on_callback_query(filters.regex("admincmd"))
+@_debug_handler
 async def admin_commands(client, query):
     if query.from_user.id not in ADMINS:
         return await query.answer("ᴛʜɪꜱ ɪꜱ ɴᴏᴛ ꜰᴏʀ ʏᴏᴜ ʙʀᴏ!", show_alert=True)
@@ -323,6 +353,7 @@ async def admin_commands(client, query):
 
 
 @Client.on_callback_query(filters.regex(r"^next"))
+@_debug_handler
 async def next_page(bot, query):
     ident, req, key, offset = query.data.split("_")
     if int(req) not in [query.from_user.id, 0]:
@@ -453,6 +484,7 @@ async def next_page(bot, query):
 
 
 @Client.on_callback_query(filters.regex(r"^seasons#"))
+@_debug_handler
 async def seasons_cb_handler(client: Client, query: CallbackQuery):
     _, key, offset, req = query.data.split("#")
     if int(req) != query.from_user.id:
@@ -488,6 +520,7 @@ async def seasons_cb_handler(client: Client, query: CallbackQuery):
 
 
 @Client.on_callback_query(filters.regex(r"^season_search#"))
+@_debug_handler
 async def season_search(client: Client, query: CallbackQuery):
     _, season, key, offset, orginal_offset, req = query.data.split("#")
     seas = int(season.split(" ", 1)[1])
@@ -654,6 +687,7 @@ async def season_search(client: Client, query: CallbackQuery):
 
 
 @Client.on_callback_query(filters.regex(r"^years#"))
+@_debug_handler
 async def years_cb_handler(client: Client, query: CallbackQuery):
     _, key, offset, req = query.data.split("#")
     if int(req) != query.from_user.id:
@@ -688,6 +722,7 @@ async def years_cb_handler(client: Client, query: CallbackQuery):
 
 
 @Client.on_callback_query(filters.regex(r"^years_search#"))
+@_debug_handler
 async def year_search(client: Client, query: CallbackQuery):
     _, year, key, offset, orginal_offset, req = query.data.split("#")
     if int(req) != query.from_user.id:
@@ -836,6 +871,7 @@ async def year_search(client: Client, query: CallbackQuery):
 
 
 @Client.on_callback_query(filters.regex(r"^qualities#"))
+@_debug_handler
 async def quality_cb_handler(client: Client, query: CallbackQuery):
     _, key, offset, req = query.data.split("#")
     if int(req) != query.from_user.id:
@@ -870,6 +906,7 @@ async def quality_cb_handler(client: Client, query: CallbackQuery):
 
 
 @Client.on_callback_query(filters.regex(r"^quality_search#"))
+@_debug_handler
 async def quality_search(client: Client, query: CallbackQuery):
     _, qul, key, offset, orginal_offset, req = query.data.split("#")
     if int(req) != query.from_user.id:
@@ -1016,6 +1053,7 @@ async def quality_search(client: Client, query: CallbackQuery):
 
 
 @Client.on_callback_query(filters.regex(r"^languages#"))
+@_debug_handler
 async def languages_cb_handler(client: Client, query: CallbackQuery):
     _, key, offset, req = query.data.split("#")
     if int(req) != query.from_user.id:
@@ -1050,6 +1088,7 @@ async def languages_cb_handler(client: Client, query: CallbackQuery):
 
 
 @Client.on_callback_query(filters.regex(r"^lang_search#"))
+@_debug_handler
 async def lang_search(client: Client, query: CallbackQuery):
     _, lang, key, offset, orginal_offset, req = query.data.split("#")
     lang2 = lang[:3]
@@ -1209,6 +1248,7 @@ async def lang_search(client: Client, query: CallbackQuery):
 
 
 @Client.on_callback_query(filters.regex(r"^spol"))
+@_debug_handler
 async def advantage_spoll_choker(bot, query):
     _, id, user = query.data.split("#")
     if int(user) != 0 and query.from_user.id != int(user):
@@ -1231,6 +1271,7 @@ async def advantage_spoll_choker(bot, query):
 
 
 @Client.on_callback_query(filters.regex(r"^cfiles"))
+@_debug_handler
 async def pmfile_cb(client, query):
     _, userid, fileid = query.data.split("#")
     if query.from_user.id != userid:
@@ -1244,6 +1285,7 @@ async def pmfile_cb(client, query):
 
 
 @Client.on_callback_query()
+@_debug_handler
 async def cb_handler(client: Client, query: CallbackQuery):
     if query.data == "close_data":
         try:
