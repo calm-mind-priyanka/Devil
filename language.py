@@ -5,9 +5,13 @@ plugins/*.py as a handler module, so shared language code must not be placed
 inside plugins/.
 """
 import re
+import logging
 
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from database.users_chats_db import db
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Exactly the languages already offered by the Premium language system.
 # Labels remain in English so users can identify them before selecting one.
@@ -57,7 +61,7 @@ async def get_user_language(user_id, telegram_user=None):
         if saved in LANGUAGES:
             return saved
     except Exception:
-        pass
+        logger.exception("LANGUAGE_LOOKUP_FAILED user=%s; falling back to Telegram language/default", user_id)
     code = str(getattr(telegram_user, "language_code", "") or "").lower().replace("_", "-")
     return ALIASES.get(code) or ALIASES.get(code.split("-", 1)[0]) or "en"
 
@@ -68,6 +72,7 @@ async def has_saved_language(user_id):
         saved = (data or {}).get("language") or (data or {}).get("language_code")
         return saved in LANGUAGES
     except Exception:
+        logger.exception("LANGUAGE_SAVED_CHECK_FAILED user=%s; treating language as not saved", user_id)
         return False
 
 
