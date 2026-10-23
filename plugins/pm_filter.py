@@ -96,6 +96,7 @@ async def _max_results_for_query(query, key=None):
         return int(MAX_BTN)
 
 from database.jsreferdb import referdb
+from language import get_user_language, has_saved_language, tr, core_tr
 from database.config_db import mdb
 import logging
 from urllib.parse import quote_plus
@@ -110,8 +111,22 @@ async def pm_search(client, message):
     await mdb.update_top_messages(message.from_user.id, message.text)
     bot_id = client.me.id
     user_id = message.from_user.id
-    #   if user_id in ADMINS: return
+    # Match IMDX's global language onboarding: ordinary PM searches must not
+    # silently run before the user has selected a UI language. Commands and
+    # shortener deep-links are handled by their dedicated handlers.
     if str(message.text).startswith("/"):
+        return
+    if not await has_saved_language(user_id):
+        try:
+            await db.update_user({"id": int(user_id), "name": message.from_user.first_name})
+        except Exception:
+            logger.exception("Could not initialize user before language selection")
+        from language import language_markup
+        await message.reply_text(
+            tr("en", "language_title") + "\n\n" + tr("en", "language_body"),
+            reply_markup=language_markup(),
+            parse_mode=enums.ParseMode.HTML,
+        )
         return
     if await db.get_pm_search_status(bot_id):
         if (

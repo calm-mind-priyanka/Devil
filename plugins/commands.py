@@ -488,7 +488,12 @@ async def _new_shortener_return(client, message, token):
 
 @Client.on_message(filters.command("start") & filters.incoming)
 async def start(client: Client, message):
-    await message.react(emoji=random.choice(REACTIONS))
+    # Reactions are cosmetic only. Some chats/bot API versions reject them;
+    # never let a failed reaction abort /start, file delivery, or verification.
+    try:
+        await message.react(emoji=random.choice(REACTIONS))
+    except Exception:
+        logger.debug("Could not react to /start; continuing normally", exc_info=True)
     m = message
     user_id = m.from_user.id
     # IMPORTANT: verification/shortlink deep-links are handled before the
