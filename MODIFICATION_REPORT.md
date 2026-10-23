@@ -1,25 +1,30 @@
-# Devil / IMDX integration review — follow-up fix
+# Devil / IMDX integration — follow-up implementation
 
-Base: original Devil project. IMDX is the reference.
+Base project: Devil. Reference project: IMDX-main.zip.
 
-## Follow-up issues identified in the previously supplied ZIP
+## Fixes in this archive
 
-- `plugins/pm_filter.py` had not been merged from IMDX; the previous archive retained Devil's older PM-search path. This meant the global-language onboarding behaviour from IMDX was missing in PM searches.
-- The `/start` handler attempted a Telegram message reaction before processing any payload. If Telegram rejected that reaction, the handler could stop before handling a normal start, file deep-link, or shortener return.
+### Startup and global language
+- `/start` reactions are best-effort, so a Telegram reaction failure cannot abort normal startup or deep-link processing.
+- First-time private `/start` shows the language picker even if the user-record initialization write fails; the write error is logged instead of blocking the picker.
+- The global language callback validates the selected language, persists it before editing the UI, reports a database write failure to the user, and refreshes the home menu after a successful save.
+- The language callback handles text and media-caption messages and tolerates `MessageNotModified`.
+- Private text searches require a saved global language before starting a movie search; slash commands and deep-links are left to their dedicated handlers.
 
-## Changes in this follow-up archive
+### Search and filters
+- Search-history analytics writes are best-effort and do not stop private or group movie searches when analytics storage fails.
+- RapidFuzz is used for title matching rather than the slower FuzzyWuzzy implementation. IMDb spelling lookup is moved off the asyncio event loop and has explicit error handling.
+- Search result Language / Quality / Season / Send All controls use the user's saved UI language where those controls are built.
+- Language, Quality, and Season picker headings use the language helper, with a safe English fallback when a translation is unavailable.
+- Devil's existing primary/fallback movie database design is preserved. Its primary and fallback reads and count operations run concurrently.
 
-- Added the global language-selection gate to ordinary private-message searches, using the existing `language.py` and Devil database facade. Commands and `/start` deep-links remain handled by their dedicated handlers.
-- Made the `/start` reaction best-effort, so reaction failures cannot block the start/verification/file-delivery flow.
-- Kept Devil's original database and MongoDB configuration. No second-database/failover architecture was added.
-- Kept Devil's original poster implementation and colour configuration; no automatic verification-reminder messages were added.
-
-## Checks
-
+## Validation performed
 - `python -m compileall -q .`: passed.
-- `python -m unittest discover -s tests -v`: 5 tests passed.
-- Live Telegram, MongoDB, and third-party shortener round trips were not available in this environment, so the end-to-end runtime fix must still be verified against a staging bot.
+- `python -m unittest discover -s tests -v`: 5 existing tests passed.
+- Static assertions for the language callback and search changes: passed.
 
-## Important scope note
-
-This follow-up fixes the confirmed `/start` reaction-abort risk and PM global-language onboarding gap. It does not claim that every IMDX performance/search implementation detail has been ported; `plugins/pm_filter.py` still differs from IMDX in other areas, including IMDX-specific spelling-correction and search enhancements. The three-step shortener flow remains separate from Devil's legacy shortener flow.
+## Not claimed
+- Live Telegram `/start` and callback interactions were not run because no bot token/session was available.
+- MongoDB read/write behaviour and actual end-to-end search latency were not benchmarked because no live database connection was available.
+- All UI strings are not translated into every language; missing strings use the existing English fallback.
+- This is a targeted, compatibility-preserving port of selected IMDX behaviour, not a wholesale replacement of Devil's command, storage, or shortener architecture.

@@ -20,7 +20,8 @@ dnspython==2.3.0
 python-math 
 speedtest-cli 
 shortzy 
-fuzzywuzzy 
+fuzzywuzzy
+rapidfuzz 
 wheel 
 gunicorn==20.1.0 
 werkzeug==2.0.2 
