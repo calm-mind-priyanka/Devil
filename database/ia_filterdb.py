@@ -1,3 +1,4 @@
+import asyncio
 from struct import pack
 import re
 import base64
