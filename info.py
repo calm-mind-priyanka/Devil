@@ -61,6 +61,8 @@ ADMINS = [
 OWNER_USERNAME = environ.get(
     "OWNER_USERNAME", "Sandymaiwait"
 )  # without @ or https://t.me/
+OWNER_ID = int(environ.get("OWNER_ID", str(ADMINS[0] if ADMINS and isinstance(ADMINS[0], int) else 6046055058)))
+BUILD_VERSION = environ.get("BUILD_VERSION", "stable")
 USERNAME = environ.get("USERNAME", "https://t.me/Sandymaiwait")  # ADMIN USERNAME
 
 # Database Channel
@@ -75,6 +77,8 @@ AUTH_REQ_CHANNEL = int(environ.get("AUTH_REQ_CHANNEL", "-1002260068200"))
 LOG_CHANNEL = int(environ.get("LOG_CHANNEL", "-1002433610423"))
 LOG_API_CHANNEL = int(environ.get("LOG_API_CHANNEL", "-1002534471850"))
 LOG_VR_CHANNEL = int(environ.get("LOG_VR_CHANNEL", "-1002395784504"))
+# Optional dedicated shortener/link tracking channel; 0 falls back to LOG_VR_CHANNEL.
+LINK_TRACK_CHANNEL = int(environ.get("LINK_TRACK_CHANNEL", "0"))
 
 # MongoDB
 DATABASE_URI = environ.get("DATABASE_URI", "mongodb+srv://Sandy4:Sandy4@cluster0.ogfoxmb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")

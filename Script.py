@@ -32,13 +32,7 @@ class script(object):
 
 <blockquote>🌿 ᴍᴀɪɴᴛᴀɪɴᴇᴅ ʙʏ : <a href='https://t.me/+DiOcxJnNQXdmNDdl'>sandy Bots &lt;/&gt;</a></b></blockquote>"""
 
-    ABOUT_TEXT = """<blockquote><b>‣ ᴍʏ ɴᴀᴍᴇ : Jisshu filter bot
-‣ ᴄʀᴇᴀᴛᴏʀ : <a href='https://t.me/+DiOcxJnNQXdmNDdl'>sandy Bots &lt;/&gt;</a>
-‣ ʟɪʙʀᴀʀʏ : ᴘʏʀᴏɢʀᴀᴍ
-‣ ʟᴀɴɢᴜᴀɢᴇ : ᴘʏᴛʜᴏɴ
-‣ ᴅᴀᴛᴀ ʙᴀsᴇ : ᴍᴏɴɢᴏ ᴅʙ
-‣ ʜᴏsᴛᴇᴅ ᴏɴ  :  ᴡᴇʙ
-‣ ʙᴜɪʟᴅ sᴛᴀᴛᴜs : V-4.1 [sᴛᴀʙʟᴇ]</b></blockquote>"""
+    ABOUT_TEXT = ""
 
     SUPPORT_GRP_MOVIE_TEXT = """<b>ʜᴇʏ {}
 
@@ -290,12 +284,13 @@ User - {}"""
 
 🔹 <b>sᴛᴇᴘ 3:</b> ᴄᴏᴍᴘʟᴇᴛᴇ ᴛʜᴇ ғɪɴᴀʟ ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ ᴛᴏ ᴜɴʟᴏᴄᴋ ᴛʜᴇ ғɪʟᴇ.</b>"""
 
-    VERIFIED_LOG_TEXT = """<b><u>☄ є∂ιтн ᴜsᴇʀ ᴠᴇʀɪꜰɪᴇᴅ sᴜᴄᴄᴇssꜰᴜʟʟʏ ☄</u>
+    VERIFIED_LOG_TEXT = """<b>🔐 ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ʀᴇᴛᴜʀɴ ᴀᴄᴄᴇᴘᴛᴇᴅ</b>
 
-⚡️ ɴᴀᴍᴇ:- {} [ <code>{}</code> ] 
-📆 ᴅᴀᴛᴇ:- <code>{} </code></b>
-
-#edith_verified_{}_completed"""
+#VerificationCompleted
+👤 ᴜꜱᴇʀ: {} [ {} ]
+📆 ᴅᴀᴛᴇ: {}
+Get File click: PENDING
+📊 ꜱᴛᴀᴛᴜꜱ: #Verificaton_{}_Completed"""
 
     MOVIES_UPDATE_TXT = """<b>#𝑵𝒆𝒘_𝑭𝒊𝒍𝒆_𝑨𝒅𝒅𝒆𝒅 ✅
 **🍿 Title:** {title}
@@ -479,11 +474,15 @@ Aᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ ᴀɴᴅ ᴍᴀᴋᴇ ᴍᴇ ᴀ�
 /movie_update_off - update off
 /movie_update_on - Movie Update on</blockquote></b>"""
 
-    SOURCE_TXT = """<b>
-ꜱᴏᴜʀᴄᴇ ᴄᴏᴅᴇ ʜᴇʀᴇ ◉› :<blockquote><a href="@Sandymaiwait">&lt;Click Here&gt;</a></blockquote>
+    SOURCE_TXT = """ᴘʀɪᴠᴀᴛᴇ & ᴘᴀɪᴅ ʀᴇᴘᴏꜱɪᴛᴏʀʏ
 
-ᴍᴀɪɴᴛᴀɪɴᴇᴅ ʙʏ : @jisshu_bots
-</b>"""
+ᴛʜɪꜱ ɪꜱ ᴀ ᴘʀɪᴠᴀᴛᴇ ᴍᴏᴅɪғɪᴇᴅ & ᴘᴀɪᴅ ʀᴇᴘᴏ.
+ɪғ ʏᴏᴜ ᴡᴀɴᴛ ᴛʜɪꜱ ʀᴇᴘᴏ ᴏʀ ᴀ ꜱɪᴍɪʟᴀʀ ᴘᴀɪᴅ ʀᴇᴘᴏ ғᴏʀ ʏᴏᴜʀ ᴏᴡɴ ʙᴏᴛ,
+ʏᴏᴜ ᴄᴀɴ ᴄᴏɴᴛᴀᴄᴛ ᴛʜᴇ ᴏᴡɴᴇʀ ғᴏʀ ᴘᴜʀᴄʜᴀꜱᴇ ᴅᴇᴛᴀɪʟꜱ.
+
+ꜱᴏᴜʀᴄᴇ ᴄᴏᴅᴇ ʜᴇʀᴇ ◉› ᴄʟɪᴄᴋ ᴛʜᴇ ʙᴜᴛᴛᴏɴ ʙᴇʟᴏᴡ.
+
+ᴍᴀɪɴᴛᴀɪɴᴇᴅ ʙʏ : @Sandymaiwait"""
     GROUP_C_TEXT = """<b><blockquote>
  --------------Set Verify-------------
 /set_verify {website link} {website api}

@@ -22,6 +22,7 @@ from pyrogram import __version__
 from pyrogram.raw.all import layer
 from database.ia_filterdb import Media
 from database.users_chats_db import db
+from database.config_db import mdb
 from info import *
 from utils import temp
 from Script import script
@@ -68,17 +69,38 @@ async def Jisshu_start():
     b_users, b_chats = await db.get_banned()
     temp.BANNED_USERS = b_users
     temp.BANNED_CHATS = b_chats
-    # Movie index creation is fail-open inside Media.ensure_indexes().
-    # Premium/user index creation must also never prevent the bot from starting
-    # when the user database has reached its storage quota.
+    # MongoDB Atlas can block all writes (including createIndex) when the
+    # cluster exceeds its storage quota. Index creation is best-effort so this
+    # optional startup task cannot prevent the bot from serving existing movies.
     try:
         await Media.ensure_indexes()
-    except Exception:
-        logging.exception("Movie index setup failed; continuing in read/failover mode.")
+        logging.info("Primary movie database indexes verified.")
+    except Exception as exc:
+        logging.exception(
+            "Could not ensure movie indexes (%s). Continuing startup; "
+            "Devil's existing movie-store fallback remains responsible for writes.",
+            type(exc).__name__,
+        )
+
+    # These collections are separate from the movie index. Keep their existing
+    # setup behavior, but log failures clearly instead of silently hiding them.
     try:
         await db.ensure_premium_indexes()
-    except Exception:
-        logging.exception("User/premium index setup failed; continuing without new indexes.")
+    except Exception as exc:
+        logging.exception(
+            "Could not ensure premium/payment indexes (%s). Continuing startup; "
+            "premium/payment database operations may be limited until MongoDB "
+            "writes are available again.",
+            type(exc).__name__,
+        )
+    try:
+        await db.ensure_verification_indexes()
+    except Exception as exc:
+        logging.exception(
+            "Could not ensure verification indexes (%s). Continuing startup.",
+            type(exc).__name__,
+        )
+    await mdb.load_premium_plans()
     me = await JisshuBot.get_me()
     temp.ME = me.id
     temp.U_NAME = me.username
@@ -105,7 +127,8 @@ async def Jisshu_start():
             await payment_bot_client.start()
             payment_me = await payment_bot_client.get_me()
             logging.info(
-                "Payment screenshot bot started: @%s", payment_me.username
+                "Payment screenshot bot started: @%s | OCR enabled=%s | OCR timeout=%ss",
+                payment_me.username, PAYMENT_OCR_ENABLED, PAYMENT_OCR_JOB_TIMEOUT_SECONDS,
             )
         except Exception:
             logging.exception("Failed to start PAYMENT_BOT_TOKEN client.")
