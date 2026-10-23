@@ -270,73 +270,124 @@ async def _search_model(model, filter, limit):
     return await cursor.to_list(length=limit)
 
 
-async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
-    query = query.strip()
+def _build_search_regex(query):
+    """Build a safe, Mongo-compatible title regex without interpreting user text as regex."""
+    query = str(query or "").strip()
     if not query:
-        raw_pattern = "."
-    elif " " not in query:
-        raw_pattern = r"(\b|[\.\+\-_])" + query + r"(\b|[\.\+\-_])"
+        return re.compile(r".", re.IGNORECASE)
+    parts = []
+    for word in query.split():
+        season = re.fullmatch(r"(?i)s0?(\d{1,2})", word)
+        if season:
+            number = int(season.group(1))
+            parts.append(r"(?:s0?" + str(number) + r"|season\s*0?" + str(number) + r")")
+        else:
+            parts.append(re.escape(word))
+    if len(parts) == 1:
+        raw = r"(\b|[\.\+\-_])" + parts[0] + r"(\b|[\.\+\-_])"
     else:
-        raw_pattern = query.replace(" ", r".*[\s\.\+\-_]")
-    try:
-        regex = re.compile(raw_pattern, flags=re.IGNORECASE)
-    except Exception:
-        regex = query
+        raw = r".*[\s\.\+\-_]".join(parts)
+    return re.compile(raw, re.IGNORECASE)
 
-    filter = {"file_name": regex}
 
-    # Fetch enough rows from each store to construct the requested combined
-    # page. Duplicate file_ids are removed so failover does not double results.
-    fetch_count = None if lang else max(1, offset + max_results)
+async def get_search_results(query, max_results=MAX_BTN, offset=0, lang=None):
+    """Fast bounded search across primary and fallback stores.
+
+    Avoids an expensive count_documents() on every user search. We fetch only
+    enough rows to fill the requested page plus one look-ahead result, query
+    both stores concurrently, and deduplicate failover copies.
+    """
+    query = str(query or "").strip()
+    max_results = max(1, min(100, int(max_results or MAX_BTN)))
+    offset = max(0, int(offset or 0))
+    regex = _build_search_regex(query)
+    mongo_filter = {"file_name": regex}
+    if lang:
+        mongo_filter = {"$and": [mongo_filter, {"file_name": re.compile(re.escape(str(lang)), re.IGNORECASE)}]}
+
     models = (PrimaryMedia, FallbackMedia)
-    # Run both failover stores concurrently. The old sequential implementation
-    # made every search wait for the slower MongoDB connection twice (read then
-    # count), which was especially noticeable compared with IMDX.
-    read_results = await asyncio.gather(
-        *(_search_model(model, filter, fetch_count) for model in models),
-        return_exceptions=True,
-    )
-    rows = []
-    seen = set()
-    successful_reads = 0
-    for model, model_rows in zip(models, read_results):
-        if isinstance(model_rows, Exception):
-            logger.warning("Movie search failed on %s store: %s", model.__name__, model_rows)
+    fetch_limit = offset + max_results + 1
+
+    async def fetch(model):
+        cursor = model.find(mongo_filter).sort("$natural", -1).limit(fetch_limit)
+        return await cursor.to_list(length=fetch_limit)
+
+    results = await asyncio.gather(*(fetch(model) for model in models), return_exceptions=True)
+    rows, seen, successes, errors = [], set(), 0, []
+    for model, result in zip(models, results):
+        if isinstance(result, Exception):
+            errors.append(f"{model.__name__}: {type(result).__name__}: {str(result)[:160]}")
+            logger.warning("Bounded movie search failed on %s: %s", model.__name__, result)
             continue
-        successful_reads += 1
-        for file in model_rows:
-            key = getattr(file, "file_id", None) or getattr(file, "_id", None)
-            if key in seen:
+        successes += 1
+        for file in result:
+            key = str(getattr(file, "file_id", None) or getattr(file, "_id", None) or "")
+            if key and key in seen:
                 continue
-            if lang and lang not in file.file_name.lower():
-                continue
-            seen.add(key)
+            if key:
+                seen.add(key)
             rows.append(file)
 
-    if successful_reads == 0:
-        raise RuntimeError("All configured movie databases failed to read")
-    if lang:
-        total_results = len(rows)
-    else:
-        count_results = await asyncio.gather(
-            *(model.count_documents(filter) for model in models),
-            return_exceptions=True,
-        )
-        total_results = 0
-        for model, count in zip(models, count_results):
-            if isinstance(count, Exception):
-                logger.warning("Movie count failed on %s store: %s", model.__name__, count)
-            else:
-                total_results += count
-        # When a count query fails, keep the result window usable rather than
-        # reporting zero for a successfully read store.
-        if total_results == 0 and rows:
-            total_results = len(rows)
-    files = rows[offset : offset + max_results]
-    next_offset = offset + max_results
-    if next_offset >= total_results:
-        next_offset = ""
-    return files, next_offset, total_results
+    if successes == 0:
+        raise RuntimeError("All configured movie databases failed to read: " + "; ".join(errors))
+
+    # One extra row tells us whether another page likely exists. Exact total
+    # counts are intentionally omitted here because counting all regex matches
+    # was a major source of latency on large collections.
+    has_next = len(rows) > offset + max_results
+    page = rows[offset:offset + max_results]
+    next_offset = offset + len(page) if has_next else ""
+    approximate_total = offset + len(page) + (1 if has_next else 0)
+    return page, next_offset, approximate_total
+
+
+async def get_title_candidates(query, limit=240):
+    """Return a bounded set of local file-name candidates for typo correction.
+
+    Use several three-character chunks so a typo near the beginning of a title
+    does not eliminate every candidate. Query the primary and fallback stores
+    concurrently and deduplicate filenames before returning them to RapidFuzz.
+    """
+    compact = re.sub(r"[^a-z0-9]+", "", str(query or "").lower())
+    if len(compact) < 3:
+        return []
+
+    chunks = []
+    for pos in sorted({0, max(0, len(compact) // 3), max(0, len(compact) // 2)}):
+        chunk = compact[pos:pos + 3]
+        if len(chunk) == 3 and chunk not in chunks:
+            chunks.append(chunk)
+    if compact[:3] not in chunks:
+        chunks.insert(0, compact[:3])
+
+    filt = {"file_name": re.compile("|".join(re.escape(x) for x in chunks), re.IGNORECASE)}
+    models = (PrimaryMedia, FallbackMedia)
+    fetch_limit = max(1, min(500, int(limit)))
+
+    async def fetch(model):
+        cursor = model.find(filt).sort("$natural", -1).limit(fetch_limit)
+        return await cursor.to_list(length=fetch_limit)
+
+    results = await asyncio.gather(*(fetch(model) for model in models), return_exceptions=True)
+    names, seen = [], set()
+    successes = 0
+    errors = []
+    for model, result in zip(models, results):
+        if isinstance(result, Exception):
+            errors.append(f"{model.__name__}: {type(result).__name__}: {str(result)[:160]}")
+            logger.debug("Local spelling candidate read failed on %s: %s", model.__name__, result)
+            continue
+        successes += 1
+        for row in result:
+            name = str(getattr(row, "file_name", "") or "").strip()
+            key = name.casefold()
+            if name and key not in seen:
+                seen.add(key)
+                names.append(name)
+
+    if successes == 0 and errors:
+        logger.warning("Both movie stores failed during local spelling lookup: %s", "; ".join(errors))
+    return names[:fetch_limit * 2]
 
 
 async def get_bad_files(query, file_type=None, offset=0, filter=False):
