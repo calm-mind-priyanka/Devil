@@ -485,6 +485,11 @@ async def _new_shortener_send_step(client, message, user_id, group_id, delivery_
     domain = settings.get(f"new_shortener_step{suffix}_url")
     api = settings.get(f"new_shortener_api{suffix}")
     tutorial = settings.get(f"new_shortener_tutorial{suffix}")
+    if not tutorial:
+        tutorial = settings.get(
+            {1: "tutorial", 2: "tutorial_2", 3: "tutorial_3"}.get(step, "tutorial"),
+            {1: TUTORIAL, 2: TUTORIAL_2, 3: TUTORIAL_3}.get(step, TUTORIAL),
+        )
     if not domain or not api:
         await message.reply_text(
             f"⚠️ The group administrator has not configured New Shortener Step {step}. Please contact the group admin."
@@ -504,18 +509,90 @@ async def _new_shortener_send_step(client, message, user_id, group_id, delivery_
     if not short_url:
         await message.reply_text("⚠️ Shortener service is temporarily unavailable. Please try again later.")
         return False
-    buttons = [[InlineKeyboardButton(f"🔗 VERIFY STEP {step}/3", url=short_url)]]
-    if tutorial:
-        buttons.append([InlineKeyboardButton("📘 Tutorial", url=str(tutorial))])
-    await message.reply_text(
-        f"<b>🔐 New link verification — Step {step}/3</b>\nComplete this step to continue. Progress resets at midnight IST.",
-        reply_markup=InlineKeyboardMarkup(buttons), parse_mode=enums.ParseMode.HTML,
+    # Match the legacy setshortlink presentation only. Keep the new short URL,
+    # token, attempt, and three-step verification logic above/below unchanged.
+    ui_lang = await get_user_language(user_id, message.from_user)
+    short_file = (await get_file_details(delivery_key) or [None])[0]
+    file_name = formate_file_name(short_file.file_name) if short_file else "File"
+    file_size = get_size(short_file.file_size) if short_file else "N/A"
+    caption = verify_tr(
+        ui_lang, f"short{step}", mention=message.from_user.mention,
+        status=get_status(), greeting=_file_mode_greeting(),
+        name=file_name, size=file_size,
     )
+    verify_label = {"hi": "शॉर्टलिंक", "ta": "SHORTLINK", "te": "SHORTLINK",
+                    "kn": "SHORTLINK", "ml": "SHORTLINK", "bn": "SHORTLINK",
+                    "mr": "SHORTLINK", "gu": "SHORTLINK", "pa": "SHORTLINK",
+                    "ur": "SHORTLINK", "as": "SHORTLINK", "ne": "SHORTLINK",
+                    "hinglish": "SHORTLINK"}.get(ui_lang, "SHORTLINK")
+    tutorial_label = {"hi": "कैसे डाउनलोड करें", "hinglish": "DOWNLOAD KAISE KARE",
+                      "as": "ডাউনলোড কেনেকৈ কৰিব", "bn": "কীভাবে ডাউনলোড করবেন"}.get(
+                          ui_lang, "VERIFY HOW TO DOWNLOAD")
+    premium_label = {"hi": "Premium खरीदें", "ta": "Premium வாங்க",
+                     "te": "Premium కొనండి", "kn": "Premium ಖರೀದಿಸಿ",
+                     "ml": "Premium വാങ്ങുക", "bn": "Premium কিনুন",
+                     "mr": "Premium घ्या", "gu": "Premium ખરીદો",
+                     "pa": "Premium ਲਵੋ", "ur": "Premium خریدیں",
+                     "as": "Premium ক্ৰয় কৰক", "ne": "Premium किन्नुहोस्",
+                     "hinglish": "PREMIUM LO"}.get(ui_lang, "BUY PREMIUM")
+    buttons = [[InlineKeyboardButton(f"🔗 {verify_label} {step}/3 🔗", url=short_url)]]
+    if tutorial:
+        buttons[0].append(InlineKeyboardButton(tutorial_label, url=str(tutorial)))
+    buttons.append([InlineKeyboardButton(premium_label, callback_data="getpremium")])
+    sent_shortener_message = await message.reply_text(
+        caption,
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode=enums.ParseMode.HTML,
+        protect_content=bool(settings.get("file_secure", PROTECT_CONTENT)),
+    )
+    # Follow the group's existing auto-delete setting and delay for shortlink
+    # prompts too. Run deletion in the background so verification can continue.
+    if settings.get("auto_delete", False):
+        try:
+            delete_delay = max(1, int(settings.get("delete_time", FILE_AUTO_DEL_TIMER)))
+        except (TypeError, ValueError):
+            delete_delay = max(1, int(FILE_AUTO_DEL_TIMER))
+
+        async def _delete_shortener_prompt_after_delay(sent_message, delay):
+            await asyncio.sleep(delay)
+            try:
+                await sent_message.delete()
+            except Exception:
+                logger.debug("Could not auto-delete shortener prompt", exc_info=True)
+
+        asyncio.create_task(_delete_shortener_prompt_after_delay(sent_shortener_message, delete_delay))
     return True
 
 
+def _new_shortener_gap_active(state, settings):
+    """Whether the user is still inside the configured file-access gap after step 1 or 2."""
+    completed_step = int(state.get("completed_step", 0) or 0)
+    if completed_step not in (1, 2):
+        return False
+    completed_at = state.get("last_completed_at")
+    if not completed_at:
+        return False
+    try:
+        now = dt.now(pytz.timezone("Asia/Kolkata"))
+        expires_at = state.get("gap_expires_at")
+        if expires_at:
+            if expires_at.tzinfo is None:
+                expires_at = pytz.UTC.localize(expires_at)
+            return now < expires_at.astimezone(pytz.timezone("Asia/Kolkata"))
+        # Backward compatibility for state created before explicit expiry was stored.
+        if completed_at.tzinfo is None:
+            completed_at = pytz.UTC.localize(completed_at)
+        completed_at = completed_at.astimezone(pytz.timezone("Asia/Kolkata"))
+        gap_key = "new_shortener_gap1" if completed_step == 1 else "new_shortener_gap2"
+        gap_seconds = max(0, int(settings.get(gap_key, 0) or 0))
+        elapsed = (now - completed_at).total_seconds()
+        return elapsed < gap_seconds
+    except (TypeError, ValueError):
+        return False
+
+
 async def _new_shortener_return(client, message, token):
-    """Validate a shortener return, progress the ordered steps, then deliver."""
+    """Validate a shortener return, grant the configured gap, then progress."""
     from database.new_shortener import consume_attempt, accept_step, get_attempt
     attempt = await get_attempt(token)
     if not attempt or int(attempt.get("user_id", 0)) != int(message.from_user.id):
@@ -529,18 +606,34 @@ async def _new_shortener_return(client, message, token):
         await message.reply_text("New Shortener verification is disabled for this group. Request the movie link again.")
         return True
     claimed = await consume_attempt(token, user_id, group_id, step)
-    if not claimed or not await accept_step(user_id, group_id, step, token, enabled=True):
+    gap_key = "new_shortener_gap1" if step == 1 else "new_shortener_gap2"
+    try:
+        gap_seconds = max(0, int(settings.get(gap_key, 0) or 0)) if step < 3 else 0
+    except (TypeError, ValueError):
+        gap_seconds = 0
+    if not claimed or not await accept_step(
+        user_id, group_id, step, token, enabled=True, gap_seconds=gap_seconds
+    ):
         await message.reply_text("⚠️ This verification step has expired or was already used. Request the movie link again.")
         return True
     delivery_key = str(attempt.get("delivery_key") or "")
     mode = str(attempt.get("mode") or "file")
+    payload_prefix = "allfilesmode" if mode == "allfiles" else "filemode"
+    payload = f"{payload_prefix}_{group_id}_{delivery_key}"
     if step < 3:
-        await _new_shortener_send_step(
-            client, message, user_id, group_id, delivery_key, mode, step + 1
+        # Legacy behavior: completing a step grants access to files during the
+        # configured gap. The next shortener is required only after that gap.
+        gap_key = "new_shortener_gap1" if step == 1 else "new_shortener_gap2"
+        try:
+            gap_seconds = max(0, int(settings.get(gap_key, 0) or 0))
+        except (TypeError, ValueError):
+            gap_seconds = 0
+        await message.reply_text(
+            f"✅ <b>Step {step}/3 verified.</b> You can access files for {gap_seconds} seconds before the next verification step.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 GET FILE", url=f"https://t.me/{temp.U_NAME}?start={payload}")]]),
+            parse_mode=enums.ParseMode.HTML,
         )
     else:
-        payload_prefix = "allfilesmode" if mode == "allfiles" else "filemode"
-        payload = f"{payload_prefix}_{group_id}_{delivery_key}"
         await message.reply_text(
             "✅ <b>Verification completed.</b> Tap below to receive your requested file.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 GET FILE", url=f"https://t.me/{temp.U_NAME}?start={payload}")]]),
@@ -1031,10 +1124,10 @@ async def start(client: Client, message):
 
         # Independent three-step shortener. It is intentionally evaluated before
         # the legacy shortener and uses separate per-group settings/state.
-        if settings.get("new_shortener_enabled", False) and not file_mode_completed:
+        if settings.get("new_shortener_enabled", False):
             from database.new_shortener import get_state
             new_state = await get_state(user_id, grp_id)
-            if not new_state.get("completed", False):
+            if not new_state.get("completed", False) and not _new_shortener_gap_active(new_state, settings):
                 next_step = int(new_state.get("completed_step", 0)) + 1
                 if next_step in (1, 2, 3):
                     await _new_shortener_send_step(
@@ -1076,7 +1169,7 @@ async def start(client: Client, message):
         if is_third_shortener and not (settings.get("shortner_three") and settings.get("api_three")):
             is_third_shortener = False
 
-        if (not file_mode_completed) and verification_enabled and primary_shortener_available and ((not user_verified) or is_second_shortener or is_third_shortener):
+        if (not settings.get("new_shortener_enabled", False)) and (not file_mode_completed) and verification_enabled and primary_shortener_available and ((not user_verified) or is_second_shortener or is_third_shortener):
             verify_id = "".join(random.choices(string.ascii_uppercase + string.digits, k=7))
             step = 3 if is_third_shortener else (2 if is_second_shortener else 1)
             if is_third_shortener:
