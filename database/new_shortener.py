@@ -137,3 +137,55 @@ async def consume_attempt(token, user_id, group_id, step, now=None):
         {"$set": {"used": True}},
     )
     return row if getattr(result, "modified_count", 0) == 1 else None
+
+
+async def find_active_gap_for_user(user_id, now=None):
+    """Find an unexpired Step 1/2 access window for a PM request.
+
+    Settings/state are group-scoped, but users often request the next file in
+    the bot's private chat. A valid active gap from the originating group must
+    also grant that user direct access in PM until the stored expiry.
+    """
+    from database.users_chats_db import db
+    today = current_ist_date(now)
+    current = now or datetime.now(IST)
+    if current.tzinfo is None:
+        current = pytz.UTC.localize(current).astimezone(IST)
+    else:
+        current = current.astimezone(IST)
+    return await db.misc.find_one({
+        "_id": {"$regex": rf"^new_shortener:-?\d+:{int(user_id)}$"},
+        "ist_date": today,
+        "completed_step": {"$in": [1, 2]},
+        "completed": False,
+        "gap_expires_at": {"$gt": current},
+    })
+
+
+async def find_latest_state_for_user(user_id, now=None):
+    """Find the latest same-day three-step state when a request starts in PM.
+
+    A user's current group may not be known from a private-chat search. This
+    lets the handler continue Step 2/3 after a gap expires, or honor Step 3
+    completion, without treating PM's group_id=0 as a separate verification.
+    """
+    from database.users_chats_db import db
+    today = current_ist_date(now)
+    return await db.misc.find_one(
+        {"_id": {"$regex": rf"^new_shortener:-?\d+:{int(user_id)}$"},
+         "ist_date": today,
+         "completed_step": {"$in": [1, 2, 3]},
+         "last_completed_at": {"$exists": True}},
+        sort=[("last_completed_at", -1)],
+    )
+
+
+async def cancel_step(user_id, group_id, step, token):
+    """Release a claimed step if link generation fails before a URL is sent."""
+    from database.users_chats_db import db
+    key = state_key(user_id, group_id)
+    result = await db.misc.update_one(
+        {"_id": key, "attempt_token": token, "attempt_step": int(step)},
+        {"$set": {"attempt_token": None, "attempt_step": None}},
+    )
+    return bool(getattr(result, "modified_count", 0) == 1)
