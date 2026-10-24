@@ -3,7 +3,7 @@
 This module intentionally stores state in the existing general-data MongoDB
 (`misc` collection); it does not create another database or persistent store.
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from secrets import token_urlsafe
 import pytz
 
@@ -47,21 +47,26 @@ async def begin_step(user_id, group_id, step, now=None):
     if step not in (1, 2, 3):
         raise ValueError("step must be 1, 2, or 3")
     state = await get_state(user_id, group_id, now)
-    if state.get("completed") or step != int(state.get("completed_step", 0)) + 1:
+    completed_step = int(state.get("completed_step", 0))
+    if (state.get("completed") or step != completed_step + 1
+            or state.get("attempt_token")):
+        # Do not invalidate an already-issued link when users double-click or
+        # request multiple files concurrently before completing the current step.
         return None
     from database.users_chats_db import db
     token = token_urlsafe(12)
-    await db.misc.update_one(
-        {"_id": state["_id"]},
+    today = current_ist_date(now)
+    result = await db.misc.update_one(
+        {"_id": state["_id"], "ist_date": today, "completed_step": completed_step,
+         "completed": False, "$or": [{"attempt_token": None}, {"attempt_token": {"$exists": False}}]},
         {"$set": {"user_id": int(user_id), "group_id": int(group_id),
-                  "ist_date": current_ist_date(now), "completed_step": int(state.get("completed_step", 0)),
-                  "attempt_step": step, "attempt_token": token, "completed": False}},
-        upsert=True,
+                  "ist_date": today, "attempt_step": step, "attempt_token": token,
+                  "completed": False}},
     )
-    return token
+    return token if getattr(result, "modified_count", 0) == 1 else None
 
 
-async def accept_step(user_id, group_id, step, token, enabled=True, now=None):
+async def accept_step(user_id, group_id, step, token, enabled=True, gap_seconds=0, now=None):
     """Accept a callback only for its user/group/date/token and next ordered step."""
     if not enabled:
         return False
@@ -77,13 +82,20 @@ async def accept_step(user_id, group_id, step, token, enabled=True, now=None):
     if not token or token != state.get("attempt_token"):
         return False
     new_completed = step
+    completed_at = datetime.now(IST) if now is None else now
+    if completed_at.tzinfo is None:
+        completed_at = pytz.UTC.localize(completed_at).astimezone(IST)
+    else:
+        completed_at = completed_at.astimezone(IST)
+    gap_expires_at = completed_at + timedelta(seconds=max(0, int(gap_seconds or 0)) if step < 3 else 0)
     result = await db.misc.update_one(
         {"_id": state["_id"], "ist_date": current_ist_date(now),
          "attempt_token": token, "attempt_step": step,
          "completed_step": step - 1},
         {"$set": {"completed_step": new_completed, "completed": step == 3,
-                  "last_completed_at": datetime.now(IST), "attempt_token": None,
-                  "attempt_step": None}},
+                  "last_completed_at": completed_at,
+                  "gap_expires_at": gap_expires_at if step < 3 else None,
+                  "attempt_token": None, "attempt_step": None}},
     )
     # A repeated/stale callback must not be reported as newly accepted.
     return bool(getattr(result, "modified_count", 0) == 1)
