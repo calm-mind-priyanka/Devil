@@ -199,6 +199,7 @@ async def _shortener_log(client, log_chat, event, user, step, **fields):
         f"📊 ꜱᴛᴀᴛᴜꜱ: {status}",
         f"📆 ᴅᴀᴛᴇ: {date_text}",
         f"🤖 Bot: {bot_name} {bot_username}".rstrip(),
+        f"🧩 Verified by bot: {fields.get('BotLabel', bot_name)}",
         f"🏷️ Group Name: {group_name}",
         f"🔗 Group Link: {group_link}",
         f"Group: {0 if is_direct_pm else group_id}",
@@ -500,13 +501,25 @@ async def _new_shortener_send_step(client, message, user_id, group_id, delivery_
         await message.reply_text("This verification step is no longer valid. Please request the movie link again.")
         return False
     await save_attempt(token, user_id, group_id, step, delivery_key, mode)
+    try:
+        from database.users_chats_db import db
+        await db.misc.update_one(
+            {"_id": f"new_shortener_attempt:{token}"},
+            {"$set": {"shortener_domain": str(domain or "")}},
+        )
+    except Exception:
+        logger.exception("Could not save new shortener domain for tracking")
     bot_username = (getattr(temp, "U_NAME", "") or "").lstrip("@")
     if not bot_username:
+        from database.new_shortener import cancel_step
+        await cancel_step(user_id, group_id, step, token)
         await message.reply_text("⚠️ The bot username is unavailable. Please try again later.")
         return False
     target = f"https://t.me/{bot_username}?start=ns_{token}"
     short_url = await _new_shortener_make_url(domain, api, target)
     if not short_url:
+        from database.new_shortener import cancel_step
+        await cancel_step(user_id, group_id, step, token)
         await message.reply_text("⚠️ Shortener service is temporarily unavailable. Please try again later.")
         return False
     # Match the legacy setshortlink presentation only. Keep the new short URL,
@@ -618,6 +631,15 @@ async def _new_shortener_return(client, message, token):
         return True
     delivery_key = str(attempt.get("delivery_key") or "")
     mode = str(attempt.get("mode") or "file")
+    try:
+        await _shortener_log(
+            client, LOG_VR_CHANNEL, "NEW_SHORTENER_VERIFIED", message.from_user, step,
+            Group=group_id, Mode=mode, BotLabel="Devil",
+            Domain=str(attempt.get("shortener_domain") or "configured step " + str(step)),
+            VerifyID=token, **{"Shortener return": "YES"},
+        )
+    except Exception:
+        logger.exception("Could not write new shortener success log")
     payload_prefix = "allfilesmode" if mode == "allfiles" else "filemode"
     payload = f"{payload_prefix}_{group_id}_{delivery_key}"
     if step < 3:
@@ -1122,12 +1144,39 @@ async def start(client: Client, message):
         print(f"Id Settings - {settings}")
         verification_enabled = bool(settings.get("is_verify", IS_VERIFY))
 
-        # Independent three-step shortener. It is intentionally evaluated before
-        # the legacy shortener and uses separate per-group settings/state.
-        if settings.get("new_shortener_enabled", False):
+        # A PM request has grp_id=0, but its valid gap may belong to a group
+        # verification; check that first to avoid incorrectly issuing Step 1 again.
+        # A PM request may not carry its originating group ID. Continue the
+        # user's latest same-day three-step state there, including after expiry.
+        new_shortener_gap_access = False
+        if int(grp_id) == 0 and not file_mode_completed:
+            try:
+                from database.new_shortener import find_latest_state_for_user
+                pm_state = await find_latest_state_for_user(user_id)
+                if pm_state:
+                    pm_group_id = int(pm_state.get("group_id", 0) or 0)
+                    pm_settings = await get_settings(pm_group_id)
+                    if pm_settings.get("new_shortener_enabled", False):
+                        if pm_state.get("completed", False):
+                            new_shortener_gap_access = True
+                        else:
+                            new_shortener_gap_access = _new_shortener_gap_active(pm_state, pm_settings)
+                            if not new_shortener_gap_access:
+                                next_step = int(pm_state.get("completed_step", 0)) + 1
+                                if next_step in (2, 3):
+                                    await _new_shortener_send_step(
+                                        client, message, user_id, pm_group_id, str(file_id),
+                                        "allfiles" if pre == "allfiles" else "file", next_step
+                                    )
+                                    return
+            except Exception:
+                logger.exception("Could not continue new-shortener verification from PM")
+        # Independent three-step shortener, separate from the legacy shortener.
+        if settings.get("new_shortener_enabled", False) and not new_shortener_gap_access:
             from database.new_shortener import get_state
             new_state = await get_state(user_id, grp_id)
-            if not new_state.get("completed", False) and not _new_shortener_gap_active(new_state, settings):
+            new_shortener_gap_access = _new_shortener_gap_active(new_state, settings)
+            if not new_state.get("completed", False) and not new_shortener_gap_access:
                 next_step = int(new_state.get("completed_step", 0)) + 1
                 if next_step in (1, 2, 3):
                     await _new_shortener_send_step(
@@ -1169,7 +1218,7 @@ async def start(client: Client, message):
         if is_third_shortener and not (settings.get("shortner_three") and settings.get("api_three")):
             is_third_shortener = False
 
-        if (not settings.get("new_shortener_enabled", False)) and (not file_mode_completed) and verification_enabled and primary_shortener_available and ((not user_verified) or is_second_shortener or is_third_shortener):
+        if (not settings.get("new_shortener_enabled", False)) and (not new_shortener_gap_access) and (not file_mode_completed) and verification_enabled and primary_shortener_available and ((not user_verified) or is_second_shortener or is_third_shortener):
             verify_id = "".join(random.choices(string.ascii_uppercase + string.digits, k=7))
             step = 3 if is_third_shortener else (2 if is_second_shortener else 1)
             if is_third_shortener:
