@@ -9,11 +9,13 @@ from pyrogram.errors import (
 from info import AUTH_CHANNEL, LONG_IMDB_DESCRIPTION, START_IMG
 from imdb import Cinemagoer
 import asyncio
+import aiohttp
 from pyrogram.types import Message
 from pyrogram import enums
 import pytz
 import re
 import os
+from urllib.parse import urlparse
 from shortzy import Shortzy
 from datetime import datetime
 from typing import Any
@@ -243,23 +245,106 @@ def list_to_str(k):
         return ", ".join(str(item) for item in k)
 
 
+def normalize_shortener_domain(site):
+    """Normalize a configured shortener URL/domain for provider matching."""
+    value = str(site or "").strip().rstrip("/")
+    value = re.sub(r"^https?://", "", value, flags=re.IGNORECASE)
+    value = value.split("/", 1)[0].strip().rstrip(".").lower()
+    if value.startswith("www."):
+        value = value[4:]
+    return value
+
+
+async def create_shortlink(link, api, site):
+    """Create a short URL using provider-specific APIs where required.
+
+    LinkCut has a dedicated GET endpoint and JSON response schema. Other
+    providers continue to use the existing Shortzy conversion and quick-link
+    fallback paths.
+    """
+    raw_site = str(site or "").strip()
+    domain = normalize_shortener_domain(raw_site)
+    api = str(api or "").strip()
+    if not domain or not api or not link:
+        logger.warning("Shortener not configured: domain_present=%s api_present=%s link_present=%s",
+                       bool(domain), bool(api), bool(link))
+        return None
+
+    logger.info("Shortener provider selected: %s", domain)
+    if domain == "linkcut.org":
+        timeout = aiohttp.ClientTimeout(total=20, connect=8, sock_read=12)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    "https://linkcut.org/api",
+                    params={"api": api, "url": str(link)},
+                    headers={"Accept": "application/json", "User-Agent": "IMDXBot/1.0"},
+                ) as response:
+                    body = await response.text()
+                    content_type = str(response.headers.get("Content-Type", "")).lower()
+                    if response.status < 200 or response.status >= 300:
+                        logger.warning("LinkCut API HTTP failure: status=%s content_type=%s",
+                                       response.status, content_type)
+                        return None
+                    if not body.strip():
+                        logger.warning("LinkCut API returned an empty response: status=%s content_type=%s",
+                                       response.status, content_type)
+                        return None
+                    try:
+                        payload = await response.json(content_type=None)
+                    except (ValueError, aiohttp.ContentTypeError):
+                        logger.warning("LinkCut API returned invalid JSON: status=%s content_type=%s",
+                                       response.status, content_type)
+                        return None
+                    if not isinstance(payload, dict):
+                        logger.warning("LinkCut API returned unexpected JSON type: %s", type(payload).__name__)
+                        return None
+                    short_url = payload.get("shortenedUrl")
+                    if str(payload.get("status", "")).lower() == "success" and isinstance(short_url, str):
+                        short_url = short_url.strip()
+                        parsed = urlparse(short_url)
+                        if parsed.scheme in {"https", "http"} and parsed.netloc:
+                            return short_url
+                        logger.warning("LinkCut API success response had an invalid shortenedUrl")
+                        return None
+                    logger.warning("LinkCut API reported failure: status=%r", payload.get("status"))
+                    if not short_url:
+                        logger.warning("LinkCut API response did not include shortenedUrl")
+                    return None
+        except asyncio.TimeoutError:
+            logger.warning("LinkCut API request timed out")
+            return None
+        except Exception as exc:
+            logger.warning("LinkCut API request failed: error_type=%s", type(exc).__name__)
+            return None
+
+    # Preserve the exact configured provider value for legacy Shortzy providers.
+    shortzy = Shortzy(api, raw_site)
+    try:
+        result = await shortzy.convert(link)
+        if result:
+            return str(result)
+    except Exception as exc:
+        logger.warning("Shortener conversion failed for provider %s: error_type=%s", domain, type(exc).__name__)
+    try:
+        result = await shortzy.get_quick_link(link)
+        return str(result) if result else None
+    except Exception as exc:
+        logger.warning("Shortener quick-link fallback failed for provider %s: error_type=%s", domain, type(exc).__name__)
+        return None
+
+
 async def get_shortlink(
     link, grp_id, is_second_shortener=False, is_third_shortener=False
 ):
     settings = await get_settings(grp_id)
     if is_third_shortener:
         api, site = settings["api_three"], settings["shortner_three"]
+    elif is_second_shortener:
+        api, site = settings["api_two"], settings["shortner_two"]
     else:
-        if is_second_shortener:
-            api, site = settings["api_two"], settings["shortner_two"]
-        else:
-            api, site = settings["api"], settings["shortner"]
-    shortzy = Shortzy(api, site)
-    try:
-        link = await shortzy.convert(link)
-    except Exception:
-        link = await shortzy.get_quick_link(link)
-    return link
+        api, site = settings["api"], settings["shortner"]
+    return await create_shortlink(link, api, site)
 
 
 def get_file_id(message: "Message") -> Any:
