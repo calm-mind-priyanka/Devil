@@ -589,6 +589,11 @@ async def season_search(client: Client, query: CallbackQuery):
         if ads_text
         else ""
     )
+    del_msg = (
+        f"\n\n<blockquote>⚠️ <b>THIS MESSAGE WILL BE AUTO DELETE AFTER {_delete_time_text(int(settings.get('delete_time', DELETE_TIME)))} TO AVOID COPYRIGHT ISSUES 🗑</b></blockquote>"
+        if settings.get("auto_delete", False)
+        else ""
+    )
     links = ""
     if settings["link"]:
         btn = []

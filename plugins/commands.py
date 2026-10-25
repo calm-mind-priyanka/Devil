@@ -397,6 +397,8 @@ async def clean_home_callback(client, query):
     raise StopPropagation
 
 
+@Client.on_message(filters.command("start") & filters.incoming)
+@_debug_handler
 async def start(client: Client, message):
     logger.info("START_HANDLER entered: chat_id=%s chat_type=%s message_id=%s from_user_id=%s text=%r", getattr(getattr(message, "chat", None), "id", None), getattr(getattr(message, "chat", None), "type", None), getattr(message, "id", None), getattr(getattr(message, "from_user", None), "id", None), (getattr(message, "text", None) or "")[:120])
     # Reactions are cosmetic only. Some chats/bot API versions reject them;
