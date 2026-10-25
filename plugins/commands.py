@@ -1149,28 +1149,37 @@ async def start(client: Client, message):
         # A PM request may not carry its originating group ID. Continue the
         # user's latest same-day three-step state there, including after expiry.
         new_shortener_gap_access = False
-        if int(grp_id) == 0 and not file_mode_completed:
+        # New 3-step progress is user-wide for access purposes, even though
+        # each cycle is stored against the group where it started. This makes
+        # the configured gap apply in group requests and in PM, and prevents
+        # the legacy Set Shortlink gate from interrupting an active new gap.
+        if not file_mode_completed:
             try:
                 from database.new_shortener import find_latest_state_for_user
-                pm_state = await find_latest_state_for_user(user_id)
-                if pm_state:
-                    pm_group_id = int(pm_state.get("group_id", 0) or 0)
-                    pm_settings = await get_settings(pm_group_id)
-                    if pm_settings.get("new_shortener_enabled", False):
-                        if pm_state.get("completed", False):
+                latest_state = await find_latest_state_for_user(user_id)
+                if latest_state:
+                    origin_group_id = int(latest_state.get("group_id", 0) or 0)
+                    origin_settings = await get_settings(origin_group_id)
+                    if origin_settings.get("new_shortener_enabled", False):
+                        if latest_state.get("completed", False):
+                            # Step 3 grants access until the IST calendar-day reset.
                             new_shortener_gap_access = True
                         else:
-                            new_shortener_gap_access = _new_shortener_gap_active(pm_state, pm_settings)
+                            new_shortener_gap_access = _new_shortener_gap_active(
+                                latest_state, origin_settings
+                            )
                             if not new_shortener_gap_access:
-                                next_step = int(pm_state.get("completed_step", 0)) + 1
+                                next_step = int(latest_state.get("completed_step", 0)) + 1
                                 if next_step in (2, 3):
                                     await _new_shortener_send_step(
-                                        client, message, user_id, pm_group_id, str(file_id),
-                                        "allfiles" if pre == "allfiles" else "file", next_step
+                                        client, message, user_id, origin_group_id,
+                                        str(file_id),
+                                        "allfiles" if pre == "allfiles" else "file",
+                                        next_step,
                                     )
                                     return
             except Exception:
-                logger.exception("Could not continue new-shortener verification from PM")
+                logger.exception("Could not continue new-shortener verification across chats")
         # Independent three-step shortener, separate from the legacy shortener.
         if settings.get("new_shortener_enabled", False) and not new_shortener_gap_access:
             from database.new_shortener import get_state
