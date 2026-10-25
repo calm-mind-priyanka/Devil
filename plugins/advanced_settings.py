@@ -1,7 +1,7 @@
 import asyncio
 import html
+import logging
 import re
-import requests
 from pyrogram import Client, filters, enums, ContinuePropagation
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -12,6 +12,7 @@ from utils import (
     is_check_admin,
     get_readable_time,
     save_default_settings,
+    create_shortlink,
 )
 from database.users_chats_db import db
 from database.config_db import mdb
@@ -183,7 +184,6 @@ def _main_settings_buttons(settings, grp_id, include_premium=False):
             f"📣 ɢʀᴏᴜᴘ ꜰsᴜʙ: {'ON ✅' if settings.get('fsub_enabled') else 'OFF ❌'}",
             callback_data=f"set_toggle#fsub_enabled#{grp_id}"
         )],
-        [InlineKeyboardButton("⚙️ NEW 3-STEP SETTINGS", callback_data=f"set_page#new_shortener#{grp_id}")],
         [
             InlineKeyboardButton(
                 "👥 ꜰᴏʀᴄᴇ ᴄʜᴀɴɴᴇʟ",
@@ -366,25 +366,6 @@ def _page_text(key, settings):
                 + "Group-specific FSUB: " + ("ON ✅" if settings.get("fsub_enabled") else "OFF ❌")
                 + "\nGlobal AUTH_CHANNEL/AUTH_REQ_CHANNEL remains enforced for compatibility.\n\n"
                 + ("\n".join(channel_lines) or "No group-specific channels configured."))
-    if key == "new_shortener":
-        return ("<b>🔗 ɴᴇᴡ 3-sᴛᴇᴘ ꜱʜᴏʀᴛᴇɴᴇʀ</b>\n\n"
-                f"Status: <b>{'ᴏɴ ✅' if settings.get('new_shortener_enabled') else 'ᴏꜰꜰ ❌'}</b>\n\n"
-                "Select a section below to configure its URL, API key, tutorial, or timing.")
-    if key in {"new_shortener_step1", "new_shortener_step2", "new_shortener_step3"}:
-        number = int(key[-1])
-        def shown(k):
-            return html.escape(str(settings.get(k) or "ɴᴏᴛ ꜱᴇᴛ"))
-        suffix = {1: "sᴛ", 2: "ɴᴅ", 3: "ʀᴅ"}[number]
-        return (f"<b>🔗 {number}{suffix} ꜱʜᴏʀᴛʟɪɴᴋ ꜱᴇᴛᴛɪɴɢs</b>\n\n"
-                f"🌐 ᴡᴇʙsɪᴛᴇ: <code>{shown(f'new_shortener_step{number}_url')}</code>\n"
-                f"🔑 ᴀᴘɪ ᴋᴇʏ: <code>{shown(f'new_shortener_api{number}')}</code>\n"
-                f"📚 ᴛᴜᴛᴏʀɪᴀʟ: {shown(f'new_shortener_tutorial{number}')}")
-    if key == "new_shortener_tutorials":
-        return "<b>📚 ɴᴇᴡ 3-sᴛᴇᴘ ᴛᴜᴛᴏʀɪᴀʟs</b>\n\nConfigure a separate tutorial for each step."
-    if key == "new_shortener_gaps":
-        return ("<b>⏱️ ɴᴇᴡ 3-sᴛᴇᴘ ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ɢᴀᴘs</b>\n\n"
-                f"Step 1 gap: <code>{settings.get('new_shortener_gap1', THREE_VERIFY_GAP)}</code> sec\n"
-                f"Step 2 gap: <code>{settings.get('new_shortener_gap2', THREE_VERIFY_GAP)}</code> sec")
     if key == "max_results":
         return f"<b>🔢 SET MAX RESULTS</b>\n\nCurrent: <code>{settings.get('max_results', MAX_BTN)}</code>\nAllowed: 1–20"
     if key == "details":
@@ -592,26 +573,6 @@ def _page_buttons(key, settings, grp_id):
             [InlineKeyboardButton("ᴄᴜsᴛᴏᴍ ᴊᴏɪɴ ʙᴜᴛᴛᴏɴ ʟᴀʙᴇʟ", callback_data=f"set_input#fsub_label#{grp_id}"),
              InlineKeyboardButton("ʀᴇsᴇᴛ ʟᴀʙᴇʟ", callback_data=f"set_input#fsub_label_reset#{grp_id}")],
         ]
-    elif key == "new_shortener":
-        toggle_label = "🔴 ᴛᴜʀɴ ᴏꜰꜰ ɴᴇᴡ 3-sᴛᴇᴘ" if settings.get("new_shortener_enabled") else "🟢 ᴛᴜʀɴ ᴏɴ ɴᴇᴡ 3-sᴛᴇᴘ"
-        b = [
-            [InlineKeyboardButton(toggle_label, callback_data=f"set_toggle#new_shortener_enabled#{grp_id}#new_shortener")],
-            [InlineKeyboardButton("1ꜱᴛ ꜱʜᴏʀᴛʟɪɴᴋ", callback_data=f"set_page#new_shortener_step1#{grp_id}"), InlineKeyboardButton("2ɴᴅ ꜱʜᴏʀᴛʟɪɴᴋ", callback_data=f"set_page#new_shortener_step2#{grp_id}")],
-            [InlineKeyboardButton("3ʀᴅ ꜱʜᴏʀᴛʟɪɴᴋ", callback_data=f"set_page#new_shortener_step3#{grp_id}")],
-            [InlineKeyboardButton("📚 ᴛᴜᴛᴏʀɪᴀʟ sᴇᴛᴛɪɴɢs", callback_data=f"set_page#new_shortener_tutorials#{grp_id}"), InlineKeyboardButton("⏱️ ɢᴀᴘ sᴇᴛᴛɪɴɢs", callback_data=f"set_page#new_shortener_gaps#{grp_id}")],
-        ]
-    elif key in {"new_shortener_step1", "new_shortener_step2", "new_shortener_step3"}:
-        number = int(key[-1])
-        b = [
-            [InlineKeyboardButton("🌐 ꜱᴇᴛ ᴡᴇʙsɪᴛᴇ ᴜʀʟ", callback_data=f"set_input#new_shortener_step{number}_url#{grp_id}")],
-            [InlineKeyboardButton("🔑 ꜱᴇᴛ ᴀᴘɪ ᴋᴇʏ", callback_data=f"set_input#new_shortener_api{number}#{grp_id}")],
-            [InlineKeyboardButton("📚 ꜱᴇᴛ ᴛᴜᴛᴏʀɪᴀʟ", callback_data=f"set_input#new_shortener_tutorial{number}#{grp_id}")],
-            _back(grp_id, "new_shortener"),
-        ]
-    elif key == "new_shortener_tutorials":
-        b = [[InlineKeyboardButton("sᴇᴛ ᴛᴜᴛᴏʀɪᴀʟ 1", callback_data=f"set_input#new_shortener_tutorial1#{grp_id}"), InlineKeyboardButton("sᴇᴛ ᴛᴜᴛᴏʀɪᴀʟ 2", callback_data=f"set_input#new_shortener_tutorial2#{grp_id}")], [InlineKeyboardButton("sᴇᴛ ᴛᴜᴛᴏʀɪᴀʟ 3", callback_data=f"set_input#new_shortener_tutorial3#{grp_id}"),], _back(grp_id, "new_shortener")]
-    elif key == "new_shortener_gaps":
-        b = [[InlineKeyboardButton("sᴇᴛ ɢᴀᴘ 1", callback_data=f"set_input#new_shortener_gap1#{grp_id}"), InlineKeyboardButton("sᴇᴛ ɢᴀᴘ 2", callback_data=f"set_input#new_shortener_gap2#{grp_id}")], _back(grp_id, "new_shortener")]
     elif key == "max_results":
         b = [[
             InlineKeyboardButton("sᴇᴛ ᴍᴀx ʀᴇsᴜʟᴛ", callback_data=f"set_input#max_results#{grp_id}"),
@@ -997,7 +958,7 @@ async def settings_callback(client, query):
             value = not bool(settings.get(key))
             await save_group_settings(gid, key, value)
             _invalidate_settings_cache(gid)
-            if len(parts) > 3 and parts[3] in {"shortlink", "new_shortener"}:
+            if len(parts) > 3 and parts[3] == "shortlink":
                 return await show_page(client, query, parts[3], gid)
             return await show_page(client, query, key, gid)
 
@@ -1025,18 +986,8 @@ async def settings_callback(client, query):
                 "fsub_label": "fsub",
                 "fsub_label_reset": "fsub",
             }
-            new_shortener_keys = {
-                "new_shortener_step1_url", "new_shortener_step2_url", "new_shortener_step3_url",
-                "new_shortener_api1", "new_shortener_api2", "new_shortener_api3",
-                "new_shortener_tutorial1", "new_shortener_tutorial2", "new_shortener_tutorial3",
-                "new_shortener_gap1", "new_shortener_gap2",
-            }
             origin_page = (
-                ("new_shortener_step" + key[-1] if key.startswith("new_shortener_api") else
-                 "new_shortener_step" + key[len("new_shortener_step")] if key.startswith("new_shortener_step") and key.endswith("_url") else
-                 "new_shortener_tutorials" if key.startswith("new_shortener_tutorial") else
-                 "new_shortener_gaps" if key.startswith("new_shortener_gap") else "new_shortener") if key in new_shortener_keys
-                else "shortlink_list" if key in {"shortner", "shortner_two", "shortner_three"}
+                "shortlink_list" if key in {"shortner", "shortner_two", "shortner_three"}
                 else "verification_gap" if key in {"verify_time", "third_verify_time"}
                 else "tutorial" if key in {"tutorial", "tutorial_2", "tutorial_3"}
                 else origin_page_map.get(key, "main")
@@ -1052,17 +1003,6 @@ async def settings_callback(client, query):
                 "fsub_delete": "sᴇɴᴅ ᴛʜᴇ ꜰᴏʀᴄᴇ-sᴜʙsᴄʀɪʙᴇ ᴄʜᴀɴɴᴇʟ ɪᴅ ᴛᴏ ᴅᴇʟᴇᴛᴇ.",
                 "fsub_label": "Send channel ID and button text separated by | (example: -1001234567890 | Join Movie Channel).",
                 "fsub_label_reset": "Send the channel ID whose custom join-button text should be reset.",
-                "new_shortener_step1_url": "Send Step 1 shortener domain/URL (http/https URL or domain).",
-                "new_shortener_step2_url": "Send Step 2 shortener domain/URL (http/https URL or domain).",
-                "new_shortener_step3_url": "Send Step 3 shortener domain/URL (http/https URL or domain).",
-                "new_shortener_api1": "Send Step 1 shortener API key.",
-                "new_shortener_api2": "Send Step 2 shortener API key.",
-                "new_shortener_api3": "Send Step 3 shortener API key.",
-                "new_shortener_tutorial1": "Send Step 1 tutorial URL.",
-                "new_shortener_tutorial2": "Send Step 2 tutorial URL.",
-                "new_shortener_tutorial3": "Send Step 3 tutorial URL.",
-                "new_shortener_gap1": "Send the Step 1 verification gap in seconds.",
-                "new_shortener_gap2": "Send the Step 2 verification gap in seconds.",
                 "tutorial": "sᴇɴᴅ ᴛᴜᴛᴏʀɪᴀʟ 1 ᴜʀʟ.",
                 "tutorial_2": "sᴇɴᴅ ᴛᴜᴛᴏʀɪᴀʟ 2 ᴜʀʟ.",
                 "tutorial_3": "sᴇɴᴅ ᴛᴜᴛᴏʀɪᴀʟ 3 ᴜʀʟ.",
@@ -1338,14 +1278,19 @@ async def advanced_input(client, message):
         number = state["number"]
         domain = state["domain"]
         try:
-            response = requests.get(f"https://{domain}/api?api={value}&url=https://t.me/", timeout=10)
-            payload = response.json()
-            if payload.get("status") not in {"success", True}:
-                raise RuntimeError(payload.get("message") or "ɪɴᴠᴀʟɪᴅ ꜱʜᴏʀᴛᴇɴᴇʀ ᴏʀ ᴀᴘɪ")
+            # Validate with the same provider-aware implementation used by file delivery.
+            # Never interpolate API keys into exception text shown to administrators.
+            test_url = await create_shortlink("https://t.me/", value, domain)
+            if not test_url:
+                raise RuntimeError(
+                    "Shortener API validation failed. Check the provider/domain and API key; "
+                    "the diagnostic log contains the HTTP/API failure without credentials."
+                )
         except Exception as exc:
+            logger.warning("Shortener settings validation failed for provider=%s error_type=%s", domain, type(exc).__name__)
             return await _edit_prompt(
                 client, state,
-                f"<b>💔 sᴏᴍᴇᴛʜɪɴɢ ᴡᴇɴᴛ ᴡʀᴏɴɢ...</b>\n<code>{exc}</code>",
+                "<b>❌ Shortener validation failed.</b>\nPlease check the provider settings and Koyeb logs.",
                 InlineKeyboardMarkup([_back(gid, "shortlink_list")])
             )
 
@@ -1428,7 +1373,7 @@ async def advanced_input(client, message):
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
-    elif key.startswith("tutorial") or key.startswith("new_shortener_tutorial"):
+    elif key.startswith("tutorial"):
         if not (value.startswith("http://") or value.startswith("https://")):
             return await message.reply_text("Send a valid http/https URL or /cancel")
         await save_group_settings(gid, key, value)
@@ -1436,9 +1381,7 @@ async def advanced_input(client, message):
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
 
-    elif key in {"shortner", "shortner_two", "shortner_three", "api", "api_two", "api_three", "verify_time", "third_verify_time",
-                 "new_shortener_step1_url", "new_shortener_step2_url", "new_shortener_step3_url",
-                 "new_shortener_api1", "new_shortener_api2", "new_shortener_api3"}:
+    elif key in {"shortner", "shortner_two", "shortner_three", "api", "api_two", "api_three", "verify_time", "third_verify_time"}:
         if key.endswith("_url") and value and not (value.startswith("http://") or value.startswith("https://") or "." in value):
             return await message.reply_text("Send a valid URL/domain or /cancel")
         await save_group_settings(gid, key, value)
@@ -1484,18 +1427,6 @@ async def advanced_input(client, message):
         channels = {str(k): str(v) for k, v in (settings.get("fsub_button_labels") or {}).items()}
         channels.pop(str(channel_id), None)
         await save_group_settings(gid, "fsub_button_labels", channels)
-        _invalidate_settings_cache(gid)
-        PENDING.pop((uid, gid), None)
-        await _delete_input_message()
-
-    elif key.startswith("new_shortener_gap"):
-        try:
-            gap = int(value)
-            if gap < 0 or gap > 86400:
-                raise ValueError
-        except (ValueError, TypeError):
-            return await message.reply_text("Send a number of seconds from 0 to 86400.")
-        await save_group_settings(gid, key, gap)
         _invalidate_settings_cache(gid)
         PENDING.pop((uid, gid), None)
         await _delete_input_message()
